@@ -95,7 +95,7 @@ const response = await fetch(`https://www.okx.com${requestPath}${queryString}`, 
 });
 ```
 
-The complete implementation can be found in [Solana swap quote](./lib/solana/swap/solana-quote.ts).
+The complete implementation can be found in [solana-quote.ts](./lib/solana/swap/solana-quote.ts).
 
 ## Available Scripts
 
