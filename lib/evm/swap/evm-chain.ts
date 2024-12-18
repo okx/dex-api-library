@@ -14,8 +14,16 @@ async function main() {
             headers
         });
 
-        const data = await response.json();
-        console.log('Supported chains response:', JSON.stringify(data, null, 2));
+        const result = await response.json();
+        // JSON response
+        // console.log(JSON.stringify(result, null, 2));
+
+        const data = result.data[0];
+        console.log('Chain Details:');
+        console.log('----------------------------------------');
+        console.log(`Chain ID: ${data.chainId}`);
+        console.log(`Chain Name: ${data.chainName}`);
+        console.log(`Dex Approval Address: ${data.dexTokenApproveAddress}`);
     } catch (error) {
         console.error('Script failed:', error);
         process.exit(1);

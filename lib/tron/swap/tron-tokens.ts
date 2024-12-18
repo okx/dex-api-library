@@ -20,6 +20,9 @@ async function main() {
         });
 
         const data = await response.json();
+        // JSON response
+        // console.log(JSON.stringify(result, null, 2));
+
         console.log('Tokens response:', JSON.stringify(data, null, 2));
     } catch (error) {
         console.error('Script failed:', error);
