@@ -1,0 +1,52 @@
+{
+  "name": "dex-api-library",
+  "version": "1.0.0",
+  "scripts": {
+    "quote:solana": "ts-node lib/solana/swap/solana-quote.ts",
+    "chain:solana": "ts-node lib/solana/swap/solana-chain.ts",
+    "tokens:solana": "ts-node lib/solana/swap/solana-tokens.ts",
+    "liquidity:solana": "ts-node lib/solana/swap/solana-liquidity.ts",
+    "bridge-tokens:solana": "ts-node lib/solana/cross-chain/solana-bridge-tokens.ts",
+    "bridges:solana": "ts-node lib/solana/cross-chain/solana-bridges.ts",
+    "cross-chain-quote:solana": "ts-node lib/solana/cross-chain/solana-cross-chain-quote.ts",
+    "token-pairs:solana": "ts-node lib/solana/cross-chain/solana-token-pairs.ts",
+    "all:solana": "npm run quote:solana && npm run chain:solana && npm run tokens:solana && npm run liquidity:solana && npm run bridge-tokens:solana && npm run bridges:solana && npm run cross-chain-quote:solana && npm run token-pairs:solana",
+    "quote:evm": "ts-node lib/evm/swap/evm-quote.ts",
+    "chain:evm": "ts-node lib/evm/swap/evm-chain.ts",
+    "tokens:evm": "ts-node lib/evm/swap/evm-tokens.ts",
+    "liquidity:evm": "ts-node lib/evm/swap/evm-liquidity.ts",
+    "bridge-tokens:evm": "ts-node lib/evm/cross-chain/evm-bridge-tokens.ts",
+    "bridges:evm": "ts-node lib/evm/cross-chain/evm-bridges.ts",
+    "cross-chain-quote:evm": "ts-node lib/evm/cross-chain/evm-cross-chain-quote.ts",
+    "all:evm": "npm run quote:evm && npm run chain:evm && npm run tokens:evm && npm run liquidity:evm && npm run bridge-tokens:evm && npm run bridges:evm && npm run cross-chain-quote:evm",
+    "quote:ton": "ts-node lib/ton/swap/ton-quote.ts",
+    "chain:ton": "ts-node lib/ton/swap/ton-chain.ts",
+    "tokens:ton": "ts-node lib/ton/swap/ton-tokens.ts",
+    "liquidity:ton": "ts-node lib/ton/swap/ton-liquidity.ts",
+    "all:ton": "npm run quote:ton && npm run chain:ton && npm run tokens:ton && npm run liquidity:ton",
+    "quote:tron": "ts-node lib/tron/swap/tron-quote.ts",
+    "chain:tron": "ts-node lib/tron/swap/tron-chain.ts",
+    "tokens:tron": "ts-node lib/tron/swap/tron-tokens.ts",
+    "liquidity:tron": "ts-node lib/tron/swap/tron-liquidity.ts",
+    "all:tron": "npm run quote:tron && npm run chain:tron && npm run tokens:tron && npm run liquidity:tron ",
+    "get-all": "npm run all:solana && npm run all:evm && npm run all:ton && npm run all:tron"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.8",
+    "@types/chalk": "^0.4.31",
+    "bs58": "^6.0.0",
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0",
+    "crypto-js": "^4.2.0",
+    "dotenv": "^16.4.7",
+    "node-fetch": "^3.3.2",
+    "ora": "^5.4.1"
+  },
+  "devDependencies": {
+    "@types/crypto-js": "^4.2.1",
+    "@types/node": "^20.10.5",
+    "@types/node-fetch": "^2.6.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
