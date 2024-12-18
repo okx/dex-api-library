@@ -36,7 +36,7 @@ OKX_API_PASSPHRASE=YOUR_API_PASSPHRASE
 
 ## Authentication
 
-The project uses a shared authentication utility ([`shared.ts`](https://github.com/okx/dex-api-library/blob/main/lib/shared.ts)) for OKX API requests. The utility handles request signing and header generation:
+The project uses a shared authentication utility ([`shared.ts`](./lib/shared.ts)) for OKX API requests. The utility handles request signing and header generation:
 
 ```typescript
 // shared.ts
@@ -95,7 +95,7 @@ const response = await fetch(`https://www.okx.com${requestPath}${queryString}`, 
 });
 ```
 
-The complete implementation can be found in [Solana swap quote](https://github.com/okx/dex-api-library/blob/main/lib/solana/swap/solana-quote.ts).
+The complete implementation can be found in [Solana swap quote](./lib/solana/swap/solana-quote.ts).
 
 ## Available Scripts
 
@@ -223,7 +223,7 @@ Each API endpoint is implemented in the corresponding scripts within this reposi
 ## Ways to Contribute
 
 ### Join Community Discussions
-Join our [Discord community](https://discord.gg/3N9PHeNn) to help other developers troubleshoot their integration issues and share your experience with the SOR SmartContract. Our Discord is the main hub for technical discussions, questions, and real-time support.
+Join our [Discord community](https://discord.gg/eQ6mVN39) to help other developers troubleshoot their integration issues and share your experience with the SOR SmartContract. Our Discord is the main hub for technical discussions, questions, and real-time support.
 
 ### Open an Issue
 - Open [issues](https://github.com/okx/dex-api-library/issues) to suggest features or report minor bugs
@@ -244,6 +244,6 @@ Join our [Discord community](https://discord.gg/3N9PHeNn) to help other develope
 - PRs should be focused and preferably address a single concern
 
 ## Questions?
-- Open a discussion [issue](https://github.com/okx/WEB3-DEX-OPENSOURCE/issues) for general questions
-- Join our [community](https://discord.gg/3N9PHeNn) for real-time discussions
+- Open a discussion [issue](https://github.com/okx/dex-api-library/issues) for general questions
+- Join our [community](https://discord.gg/eQ6mVN39) for real-time discussions
 - Review existing issues and discussions
