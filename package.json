@@ -19,6 +19,14 @@
     "bridges:evm": "ts-node lib/evm/cross-chain/evm-bridges.ts",
     "cross-chain-quote:evm": "ts-node lib/evm/cross-chain/evm-cross-chain-quote.ts",
     "all:evm": "npm run quote:evm && npm run chain:evm && npm run tokens:evm && npm run liquidity:evm && npm run bridge-tokens:evm && npm run bridges:evm && npm run cross-chain-quote:evm",
+    "quote:sui": "ts-node lib/sui/swap/sui-quote.ts",
+    "chain:sui": "ts-node lib/sui/swap/sui-chain.ts",
+    "tokens:sui": "ts-node lib/sui/swap/sui-tokens.ts",
+    "liquidity:sui": "ts-node lib/sui/swap/sui-liquidity.ts",
+    "bridge-tokens:sui": "ts-node lib/sui/cross-chain/sui-bridge-tokens.ts",
+    "bridges:sui": "ts-node lib/sui/cross-chain/sui-bridges.ts",
+    "cross-chain-quote:sui": "ts-node lib/sui/cross-chain/sui-cross-chain-quote.ts",
+    "all:sui": "npm run quote:sui && npm run chain:sui && npm run tokens:sui && npm run liquidity:sui && npm run bridge-tokens:sui && npm run bridges:sui && npm run cross-chain-quote:sui",
     "quote:ton": "ts-node lib/ton/swap/ton-quote.ts",
     "chain:ton": "ts-node lib/ton/swap/ton-chain.ts",
     "tokens:ton": "ts-node lib/ton/swap/ton-tokens.ts",
@@ -32,6 +40,8 @@
     "get-all": "npm run all:solana && npm run all:evm && npm run all:ton && npm run all:tron"
   },
   "dependencies": {
+    "@mysten/bcs": "^1.2.0",
+    "@mysten/sui": "^1.17.0",
     "@solana/web3.js": "^1.95.8",
     "@types/chalk": "^0.4.31",
     "bs58": "^6.0.0",
