@@ -22,6 +22,7 @@
     "cross-chain-quote:evm": "ts-node lib/evm/cross-chain/evm-cross-chain-quote.ts",
     "all:evm": "npm run quote:evm && npm run chain:evm && npm run tokens:evm && npm run liquidity:evm && npm run bridge-tokens:evm && npm run bridges:evm && npm run cross-chain-quote:evm",
     "quote:sui": "ts-node lib/sui/swap/sui-quote.ts",
+    "swap-data:sui": "ts-node lib/sui/swap/sui-swap.ts",
     "chain:sui": "ts-node lib/sui/swap/sui-chain.ts",
     "tokens:sui": "ts-node lib/sui/swap/sui-tokens.ts",
     "liquidity:sui": "ts-node lib/sui/swap/sui-liquidity.ts",
