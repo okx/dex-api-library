@@ -9,7 +9,7 @@ async function main() {
             fromTokenAddress: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE', // Native ETH
             toTokenAddress: '0xdAC17F958D2ee523a2206206994597C13D831ec7', // USDT
             userWalletAddress: "0x9163756d2a83a334de2cc0c3aa1df9a5fc21369d",
-            slippage: "0.5",
+            slippage: "0.1",
             autoSlippage: "true",
             maxAutoSlippageBps: "100"
         };
