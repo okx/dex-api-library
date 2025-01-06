@@ -20,7 +20,7 @@ async function getQuote(params: any) {
 
 async function main() {
     try {
-        console.log('Getting Solana quote...');
+        console.log('Getting Solana swap data...');
 
         const quote = await getQuote({
             chainId: '501',
