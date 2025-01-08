@@ -2,7 +2,6 @@
 
 A comprehensive collection of TypeScript scripts for interacting with the OKX DEX API across Ethereum (EVM), Solana, Ton and Tron networks, supporting both single and cross-chain DEX operations.
 
-_Note: Cross-Chain API support for TON and TRON coming soon_
 
 ## Prerequisites
 - Node v20.17.0 or higher
@@ -30,6 +29,10 @@ OKX_PROJECT_ID=YOUR_PROJECT_ID
 OKX_API_KEY=YOUR_API_KEY
 OKX_SECRET_KEY=YOUR_API_SECRET_KEY
 OKX_API_PASSPHRASE=YOUR_API_PASSPHRASE
+
+# Optional: Set the network to use for the scripts
+SOLANA_RPC_URL=YOUR_SOLANA_RPC_URL
+WS_ENDPONT=YOUR_WS_ENDPOINT
 ```
 
  _Note: Keep your .env file secure and never commit it to version control_
@@ -105,14 +108,16 @@ To run individual commands, you can use the following scripts with the target ne
 
 ```bash
 # Individual Commands
-npm run quote:<target_network>                # Get swap quotes
-npm run chain:<target_network>                # Get chain info
-npm run tokens:<target_network>               # List supported tokens
-npm run liquidity:<target_network>            # Get liquidity info
-npm run bridge-tokens:<target_network>        # List bridge tokens
-npm run bridges:<target_network>              # Get bridge info
-npm run cross-chain-quote:<target_network>    # Get cross-chain quotes
-npm run token-pairs:<target_network>          # List token pairs
+npm run quote:<target_network>                          # Get swap quotes
+npm run swap:solana -- <amount> <fromToken> <toToken>   # Execute a swap
+npm run swap-data:<target_network>                      # Get swap data
+npm run chain:<target_network>                          # Get chain info
+npm run tokens:<target_network>                         # List supported tokens
+npm run liquidity:<target_network>                      # Get liquidity info
+npm run bridge-tokens:<target_network>                  # List bridge tokens
+npm run bridges:<target_network>                        # Get bridge info
+npm run cross-chain-quote:<target_network>              # Get cross-chain quotes
+npm run token-pairs:<target_network>                    # List token pairs
 ```
 
 Example:
