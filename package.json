@@ -4,6 +4,7 @@
   "scripts": {
     "quote:solana": "ts-node lib/solana/swap/solana-quote.ts",
     "swap-data:solana": "ts-node lib/solana/swap/solana-swap-data.ts",
+    "swap:solana": "ts-node lib/solana/swap/solana-swap.ts",
     "chain:solana": "ts-node lib/solana/swap/solana-chain.ts",
     "tokens:solana": "ts-node lib/solana/swap/solana-tokens.ts",
     "liquidity:solana": "ts-node lib/solana/swap/solana-liquidity.ts",
