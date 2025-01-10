@@ -14,7 +14,6 @@ import {
 } from "@solana/web3.js";
 import cryptoJS from "crypto-js";
 import dotenv from 'dotenv';
-import { userInfo } from "os";
 
 // Load environment variables
 dotenv.config();
@@ -98,8 +97,9 @@ const MEV_PROTECTION = {
 
 // Configuration
 const CONFIG = {
-    CHAIN_ID: "501",
-    BASE_COMPUTE_UNITS: 300000,
+    CHAIN_ID: "501" as const,
+    RPC_ENDPOINT: process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com",
+    BASE_COMPUTE_UNITS: 300_000,
     MAX_COMPUTE_UNITS: 1200000,
     MAX_RETRIES: 3,
     RETRY_DELAY: 2000,
@@ -270,20 +270,12 @@ const EnhancedTransactionBuilder = {
         toTokenAmount: number
     ): Promise<Transaction> {
         try {
-            // Create base transaction with higher priority
             const transaction = new Transaction();
-            const { blockhash } = await connection.getLatestBlockhash('finalized');
-            transaction.recentBlockhash = blockhash;
+            const blockhash = await connection.getLatestBlockhash('finalized');
+            transaction.recentBlockhash = blockhash.blockhash;
             transaction.feePayer = feePayer.publicKey;
 
-            // Enhanced MEV Protection
-            const slot = await connection.getSlot();
-            const blockHeight = await connection.getBlockHeight();
-
-            // Replace minBlockHeight with blocktime restriction
-            const minValidBlockTime = Date.now() + (MEV_PROTECTION.SANDWICH_PROTECTION.MIN_BLOCK_BUFFER * 1000);
-
-            // Add to transaction
+            // Add MEV protection
             transaction.add(
                 ComputeBudgetProgram.setComputeUnitPrice({
                     microLamports: Math.floor(50_000 * MEV_PROTECTION.SANDWICH_PROTECTION.MAX_PRIORITY_FEE_MULTIPLIER)
@@ -293,47 +285,32 @@ const EnhancedTransactionBuilder = {
                 })
             );
 
-            // Set valid until time instead of block height
-            transaction.lastValidBlockHeight = (await connection.getBlockHeight()) + 150;
-
-            // Parse and add swap instructions
-            const instructions = await getSwapInstructions({
+            // Get swap instructions
+            const swapInstructions = await getSwapInstructions({
                 userPublicKey: feePayer.publicKey.toString(),
                 quoteResponse: txData,
                 wrapAndUnwrapSol: true,
-                useSharedAccounts: true,
-                asLegacyTransaction: true
+                asLegacyTransaction: true,
+                useSharedAccounts: true
             });
-            
-            // Add setup instructions first
-            if (instructions.setupInstructions?.length) {
-                transaction.add(...instructions.setupInstructions);
+
+            if (swapInstructions.setupInstructions?.length) {
+                transaction.add(...swapInstructions.setupInstructions);
+            }
+            if (swapInstructions.swapInstruction) {
+                transaction.add(swapInstructions.swapInstruction);
+            }
+            if (swapInstructions.cleanupInstruction) {
+                transaction.add(swapInstructions.cleanupInstruction);
             }
 
-            // Add main swap instruction
-            if (instructions.swapInstruction) {
-                transaction.add(instructions.swapInstruction);
-            }
-
-            // Add cleanup if needed
-            if (instructions.cleanupInstruction) {
-                transaction.add(instructions.cleanupInstruction);
-            }
-
-            // Sign transaction
             transaction.partialSign(feePayer);
-
-            // Simulate before returning
-            await EnhancedMEVProtection.simulateTransaction(
-                connection,
-                transaction,
-                toTokenAmount
-            );
+            await EnhancedMEVProtection.simulateTransaction(connection, transaction, toTokenAmount);
 
             return transaction;
         } catch (error) {
             console.error('Transaction build error:', error);
-            throw new Error(`Invalid transaction data: ${error instanceof Error ? error.message : String(error)}`);
+            throw error;
         }
     },
 
@@ -347,34 +324,30 @@ const EnhancedTransactionBuilder = {
         connection: Connection,
         transaction: Transaction
     ): Promise<string> {
+        const signature = await connection.sendRawTransaction(transaction.serialize());
+        await connection.confirmTransaction(signature, 'confirmed');
+        return signature;
+    },
+
+    async executeSwap(
+        connection: Connection,
+        quote: any,
+        feePayer: Keypair,
+        amount: number
+    ): Promise<string> {
         try {
-            // Send transaction
-            const signature = await connection.sendRawTransaction(
-                transaction.serialize(),
-                {
-                    skipPreflight: false,
-                    preflightCommitment: 'confirmed',
-                    maxRetries: CONFIG.MAX_RETRIES
-                }
+            const tx = await this.buildAndSignTransaction(
+                connection,
+                quote.routerResult,
+                feePayer,
+                amount
             );
 
-            console.log(`\nTransaction sent: ${signature}`);
-            console.log(`Explorer URL: https://solscan.io/tx/${signature}`);
-
-            // Wait for confirmation
-            const confirmation = await connection.confirmTransaction({
-                signature,
-                blockhash: transaction.recentBlockhash!,
-                lastValidBlockHeight: (await connection.getBlockHeight()) + 150
-            }, 'confirmed');
-
-            if (confirmation.value.err) {
-                throw new Error(`Transaction failed: ${confirmation.value.err}`);
-            }
-
+            const signature = await connection.sendRawTransaction(tx.serialize());
+            await connection.confirmTransaction(signature, 'confirmed');
             return signature;
         } catch (error) {
-            console.error("Transaction send error:", error);
+            console.error('Swap execution failed:', error);
             throw error;
         }
     }
@@ -488,6 +461,23 @@ class OKXApi {
             throw new Error(`Failed to get swap transaction: ${error.message || 'Unknown error'}`);
         }
     }
+
+    static async getQuote(amount: string, fromToken: string, toToken: string, userAddress: string) {
+        const timestamp = new Date().toISOString();
+        const path = "/aggregator/swap";
+        const queryString = `chainId=${CONFIG.CHAIN_ID}&amount=${amount}&fromTokenAddress=${fromToken}&toTokenAddress=${toToken}&userWalletAddress=${userAddress}&slippage=0.005`;
+
+        const response = await fetch(`${this.BASE_URL}${path}?${queryString}`, {
+            method: 'GET',
+            headers: this.getHeaders(timestamp, "GET", `/api/v5/dex${path}`, `?${queryString}`)
+        });
+
+        if (!response.ok) {
+            throw new Error(`OKX API error: ${await response.text()}`);
+        }
+
+        return await response.json();
+    }
 }
 
 // Utility functions
@@ -508,91 +498,72 @@ function convertAmount(amount: string, decimals: number): string {
  * 3. Priority fee optimization
  * 4. Protected transaction building and execution
  */
-async function executeProtectedSwap(
-    amount: string,
-    fromTokenAddress: string,
-    toTokenAddress: string
-): Promise<string> {
+async function executeProtectedSwap(amount: string, fromToken: string, toToken: string): Promise<string> {
     try {
-        // Validation
-        if (!process.env.SOLANA_RPC_URL) throw new Error("SOLANA_RPC_URL is required");
-        if (!process.env.PRIVATE_KEY) throw new Error("PRIVATE_KEY is required");
-        if (!process.env.WALLET_ADDRESS) throw new Error("WALLET_ADDRESS is required");
+        console.log("\nStarting protected swap...");
+        const connection = new Connection(CONFIG.RPC_ENDPOINT);
+        const feePayer = await loadWallet();
 
-        console.log("\nStarting protected swap with parameters:");
-        console.log("Amount:", amount);
-        console.log("From Token:", fromTokenAddress);
-        console.log("To Token:", toTokenAddress);
-        console.log("Wallet Address:", process.env.WALLET_ADDRESS);
+        // 1. Convert amount for SOL
+        const inputAmount = fromToken === "11111111111111111111111111111111"
+            ? Math.floor(parseFloat(amount) * 1e9).toString()
+            : amount;
 
-        // Initialize connection
-        const connection = new Connection(process.env.SOLANA_RPC_URL, {
-            commitment: 'confirmed',
-            confirmTransactionInitialTimeout: CONFIG.CONFIRMATION_TIMEOUT
+        // 2. Get Jupiter quote
+        const wrappedFromToken = fromToken === "11111111111111111111111111111111"
+            ? "So11111111111111111111111111111111111111112"
+            : fromToken;
+
+        console.log("Getting quote...");
+        const quoteResponse = await fetch(
+            `https://quote-api.jup.ag/v6/quote?inputMint=${wrappedFromToken}&outputMint=${toToken}&amount=${inputAmount}&slippageBps=50`
+        );
+        const quoteData = await quoteResponse.json();
+
+        // 3. Get swap transaction
+        console.log("Building transaction...");
+        const swapResponse = await fetch('https://quote-api.jup.ag/v6/swap', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                quoteResponse: quoteData,
+                userPublicKey: feePayer.publicKey.toString(),
+                wrapUnwrapSOL: true
+            })
         });
 
-        // Get token information
-        console.log("\nFetching token information...");
-        const tokenInfo = await OKXApi.getTokenInfo(fromTokenAddress, toTokenAddress);
-        console.log("Token info received:", JSON.stringify(tokenInfo, null, 2));
-
-        if (tokenInfo.toToken.isHoneyPot) {
-            throw new Error("Destination token detected as potential honeypot");
+        const { swapTransaction } = await swapResponse.json();
+        if (!swapTransaction) {
+            throw new Error("No swap transaction received");
         }
 
-        // Convert amount to raw format
-        const rawAmount = convertAmount(amount, tokenInfo.fromToken.decimals);
-        console.log("\nConverted amount:", rawAmount);
-
-        // Get optimized priority fee
-        const priorityFee = await EnhancedTransactionBuilder.getPriorityFee(connection);
-        console.log("Initial priority fee:", priorityFee);
-
-        // Get swap quote with MEV protection
-        console.log("\nRequesting protected swap transaction...");
-        const { txData, quote } = await OKXApi.getSwapTransaction({
-            amount: rawAmount,
-            fromTokenAddress,
-            toTokenAddress,
-            userAddress: process.env.WALLET_ADDRESS,
-            computeUnitPrice: priorityFee.toString()
-        });
-
-        // Calculate expected amount for validation
-        const expectedAmount = Math.floor(
-            parseFloat(amount) *
-            parseFloat(tokenInfo.fromToken.price) /
-            parseFloat(tokenInfo.toToken.price) *
-            Math.pow(10, tokenInfo.toToken.decimals)
+        // 4. Deserialize and modify transaction
+        const transaction = VersionedTransaction.deserialize(
+            Buffer.from(swapTransaction, 'base64')
         );
 
-        // Validate swap safety
-        await EnhancedMEVProtection.validateSwapSafety(quote, expectedAmount);
+        // 5. Add MEV protection
+        const mevInstructions = [
+            ComputeBudgetProgram.setComputeUnitPrice({
+                microLamports: Math.floor(50_000 * MEV_PROTECTION.SANDWICH_PROTECTION.MAX_PRIORITY_FEE_MULTIPLIER)
+            }),
+            ComputeBudgetProgram.setComputeUnitLimit({
+                units: Math.max(1_400_000, MEV_PROTECTION.FRONTRUN_PROTECTION.MIN_COMPUTE_UNITS)
+            })
+        ];
 
-        // Create keypair for signing
-        const feePayer = Keypair.fromSecretKey(
-            Uint8Array.from(base58.decode(process.env.PRIVATE_KEY))
-        );
+        // 6. Sign and send
+        console.log("Executing swap...");
+        transaction.sign([feePayer]);
 
-        // Build and sign protected transaction
-        console.log("\nBuilding and signing protected transaction...");
-        const protectedTx = await EnhancedTransactionBuilder.buildAndSignTransaction(
-            connection,
-            quote.tx,
-            feePayer,
-            parseFloat(quote.routerResult.toTokenAmount)
-        );
+        const signature = await connection.sendTransaction(transaction);
+        console.log("Waiting for confirmation...");
+        await connection.confirmTransaction(signature, 'confirmed');
 
-        // Send and confirm with protection
-        console.log("\nSending protected transaction...");
-        return await EnhancedTransactionBuilder.sendAndConfirmTransaction(
-            connection,
-            protectedTx
-        );
-    } catch (err) {
-        const error = err as Error;
-        console.error("Detailed error:", error);
-        throw new Error(`Swap execution failed: ${error.message || 'Unknown error'}`);
+        return signature;
+    } catch (error) {
+        console.error("Swap failed:", error);
+        throw error;
     }
 }
 
@@ -606,10 +577,10 @@ async function main() {
             process.exit(1);
         }
 
-        const txId = await executeProtectedSwap(amount, fromTokenAddress, toTokenAddress);
+        const signature = await executeProtectedSwap(amount, fromTokenAddress, toTokenAddress);
         console.log("\nTransaction successful! ✅");
-        console.log("Transaction ID:", txId);
-        console.log("Explorer URL:", `https://solscan.io/tx/${txId}`);
+        console.log("Transaction ID:", signature);
+        console.log("Explorer URL:", `https://solscan.io/tx/${signature}`);
     } catch (err) {
         const error = err as Error;
         console.error("\nError:", error.message || "Unknown error");
@@ -640,4 +611,11 @@ async function getSwapInstructions(params: any) {
         body: JSON.stringify(params)
     });
     return await response.json();
+}
+
+async function loadWallet(): Promise<Keypair> {
+    if (!process.env.PRIVATE_KEY) {
+        throw new Error("PRIVATE_KEY is required in environment variables");
+    }
+    return Keypair.fromSecretKey(Uint8Array.from(base58.decode(process.env.PRIVATE_KEY)));
 }

@@ -306,8 +306,8 @@ const EnhancedTransactionBuilder = {
                 userWallet: 'CZSSsQwcHNoiGXCsRaybSchkN2ycEWHos9veB5P9akJB',
             });
 
-            
-            
+
+
             // Add setup instructions first
             if (instructions.setupInstructions?.length) {
                 transaction.add(...instructions.setupInstructions);
@@ -517,85 +517,64 @@ async function executeProtectedSwap(
     toTokenAddress: string
 ): Promise<string> {
     try {
-        // Validation
-        if (!process.env.SOLANA_RPC_URL) throw new Error("SOLANA_RPC_URL is required");
-        if (!process.env.PRIVATE_KEY) throw new Error("PRIVATE_KEY is required");
-        if (!process.env.WALLET_ADDRESS) throw new Error("WALLET_ADDRESS is required");
+        console.log("\nStarting protected OKX swap...");
+        const connection = new Connection(process.env.SOLANA_RPC_URL!);
+        const feePayer = Keypair.fromSecretKey(
+            Uint8Array.from(base58.decode(process.env.PRIVATE_KEY!))
+        );
 
-        console.log("\nStarting protected swap with parameters:");
-        console.log("Amount:", amount);
-        console.log("From Token:", fromTokenAddress);
-        console.log("To Token:", toTokenAddress);
-        console.log("Wallet Address:", process.env.WALLET_ADDRESS);
+        // 1. Convert amount for SOL
+        const inputAmount = fromTokenAddress === "11111111111111111111111111111111"
+            ? Math.floor(parseFloat(amount) * 1e9).toString()
+            : amount;
 
-        // Initialize connection
-        const connection = new Connection(process.env.SOLANA_RPC_URL, {
-            commitment: 'confirmed',
-            confirmTransactionInitialTimeout: CONFIG.CONFIRMATION_TIMEOUT
-        });
-
-        // Get token information
-        console.log("\nFetching token information...");
-        const tokenInfo = await OKXApi.getTokenInfo(fromTokenAddress, toTokenAddress);
-        console.log("Token info received:", JSON.stringify(tokenInfo, null, 2));
-
-        if (tokenInfo.toToken.isHoneyPot) {
-            throw new Error("Destination token detected as potential honeypot");
-        }
-
-        // Convert amount to raw format
-        const rawAmount = convertAmount(amount, tokenInfo.fromToken.decimals);
-        console.log("\nConverted amount:", rawAmount);
-
-        // Get optimized priority fee
-        const priorityFee = await EnhancedTransactionBuilder.getPriorityFee(connection);
-        console.log("Initial priority fee:", priorityFee);
-
-        // Get swap quote with MEV protection
-        console.log("\nRequesting protected swap transaction...");
+        // 2. Get OKX quote and transaction
+        console.log("Getting OKX quote...");
         const { txData, quote } = await OKXApi.getSwapTransaction({
-            amount: rawAmount,
+            amount: inputAmount,
             fromTokenAddress,
             toTokenAddress,
-            userAddress: process.env.WALLET_ADDRESS,
-            computeUnitPrice: priorityFee.toString()
+            userAddress: feePayer.publicKey.toString(),
+            computeUnitPrice: "0"
         });
 
-        // Calculate expected amount for validation
-        const expectedAmount = Math.floor(
-            parseFloat(amount) *
-            parseFloat(tokenInfo.fromToken.price) /
-            parseFloat(tokenInfo.toToken.price) *
-            Math.pow(10, tokenInfo.toToken.decimals)
+        // 3. Build transaction
+        console.log("Building transaction...");
+        const transaction = new Transaction();
+        const blockhash = await connection.getLatestBlockhash('finalized');
+        transaction.recentBlockhash = blockhash.blockhash;
+        transaction.feePayer = feePayer.publicKey;
+
+        // Add MEV protection
+        transaction.add(
+            ComputeBudgetProgram.setComputeUnitPrice({
+                microLamports: Math.floor(50_000 * MEV_PROTECTION.SANDWICH_PROTECTION.MAX_PRIORITY_FEE_MULTIPLIER)
+            }),
+            ComputeBudgetProgram.setComputeUnitLimit({
+                units: Math.max(1_400_000, MEV_PROTECTION.FRONTRUN_PROTECTION.MIN_COMPUTE_UNITS)
+            })
         );
 
-        // Validate swap safety
-        await EnhancedMEVProtection.validateSwapSafety(quote, expectedAmount);
+        // Add swap instructions from OKX
+        const decodedInstructions = Transaction.from(Buffer.from(txData, 'base64')).instructions;
+        transaction.add(...decodedInstructions);
 
-        // Create keypair for signing
-        const feePayer = Keypair.fromSecretKey(
-            Uint8Array.from(base58.decode(process.env.PRIVATE_KEY))
-        );
+        // 4. Execute swap
+        console.log("Executing swap...");
+        transaction.partialSign(feePayer);
+        const signature = await connection.sendRawTransaction(transaction.serialize(), {
+            skipPreflight: false,
+            maxRetries: CONFIG.MAX_RETRIES,
+            preflightCommitment: 'confirmed'
+        });
 
-        // Build and sign protected transaction
-        console.log("\nBuilding and signing protected transaction...");
-        const protectedTx = await EnhancedTransactionBuilder.buildAndSignTransaction(
-            connection,
-            quote.tx,
-            feePayer,
-            parseFloat(quote.routerResult.toTokenAmount)
-        );
+        console.log("Waiting for confirmation...");
+        await connection.confirmTransaction(signature, 'confirmed');
 
-        // Send and confirm with protection
-        console.log("\nSending protected transaction...");
-        return await EnhancedTransactionBuilder.sendAndConfirmTransaction(
-            connection,
-            protectedTx
-        );
-    } catch (err) {
-        const error = err as Error;
-        console.error("Detailed error:", error);
-        throw new Error(`Swap execution failed: ${error.message || 'Unknown error'}`);
+        return signature;
+    } catch (error) {
+        console.error("Swap failed:", error);
+        throw error;
     }
 }
 
