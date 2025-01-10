@@ -8,33 +8,13 @@ import {
     TransactionInstruction,
     Blockhash,
     Keypair,
-    PublicKey,
-    Message,
-    VersionedMessage
+    PublicKey
 } from "@solana/web3.js";
 import cryptoJS from "crypto-js";
 import dotenv from 'dotenv';
-import { userInfo } from "os";
 
 // Load environment variables
 dotenv.config();
-
-/**
- * MEV Protection System
- * 
- * This implementation provides comprehensive protection against MEV attacks including:
- * - Sandwich attacks
- * - Frontrunning
- * - Price manipulation
- * - Honeypot detection
- * 
- * Key protection mechanisms:
- * 1. Route splitting and validation
- * 2. Dynamic priority fees
- * 3. Transaction simulation
- * 4. Block height restrictions
- * 5. Slippage protection
- */
 
 // Types
 interface TokenInfo {
@@ -47,7 +27,7 @@ interface TokenInfo {
 interface SwapQuote {
     fromToken: TokenInfo;
     toToken: TokenInfo;
-    quote?: any;
+    quote?: any; // For storing full quote data
 }
 
 interface SwapParams {
@@ -58,53 +38,43 @@ interface SwapParams {
     computeUnitPrice: string;
 }
 
-interface RouteInfo {
-    dexName: string;
-    percentage: number;
-    priceImpact: number;
-}
-
-/**
- * MEV Protection Configuration
- * 
- * Defines critical parameters for protecting against various MEV attack vectors:
- * - MAX_PRICE_IMPACT_BPS: Prevents excessive price manipulation
- * - MIN/MAX_ROUTE_SPLITS: Ensures trade splitting for price impact protection
- * - SANDWICH_PROTECTION: Parameters to prevent sandwich attacks
- * - FRONTRUN_PROTECTION: Mechanisms to prevent frontrunning
- */
+// MEV Protection Constants
 const MEV_PROTECTION = {
-    MAX_PRICE_IMPACT_BPS: 150,        // Maximum 1.5% price impact allowed
-    MIN_ROUTE_SPLITS: 2,              // Minimum routes to split trade
-    MAX_ROUTE_SPLITS: 4,              // Maximum routes to split trade
-    MAX_IN_FLIGHT_DURATION_MS: 60000, // Maximum time transaction can be pending
-    MIN_ROUTE_PERCENTAGE: 5,          // Minimum 5% per route
-    MAX_QUOTE_VARIANCE: 100,          // Maximum 1% variance between quotes
+    MAX_PRICE_IMPACT_BPS: 150, // 1.5%
+    MIN_ROUTE_SPLITS: 2,
+    MAX_ROUTE_SPLITS: 4,
+    MAX_IN_FLIGHT_DURATION_MS: 1000,
     SIMULATION_ADDRESSES: {
         USDC: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
         WSOL: 'So11111111111111111111111111111111111111112',
-    },
-    SANDWICH_PROTECTION: {
-        MIN_BLOCK_BUFFER: 2,           // Minimum blocks before execution
-        MAX_PRIORITY_FEE_MULTIPLIER: 3, // Priority fee multiplier for competing with MEV bots
-        SLIPPAGE_BUFFER_BPS: 20        // Additional slippage protection
-    },
-    FRONTRUN_PROTECTION: {
-        USE_VERSIONED_TX: true,         // Use versioned transactions when possible
-        MIN_COMPUTE_UNITS: 1_000_000,   // Minimum compute units to ensure execution
-        PRIORITY_MULTIPLIER: 1.5        // Priority multiplier for transaction ordering
     }
 } as const;
 
-// Configuration
+// Constants
+const REQUIRED_ENV_VARS = {
+    OKX_API_KEY: process.env.OKX_API_KEY,
+    OKX_SECRET_KEY: process.env.OKX_SECRET_KEY,
+    OKX_API_PASSPHRASE: process.env.OKX_API_PASSPHRASE,
+    OKX_PROJECT_ID: process.env.OKX_PROJECT_ID,
+    WALLET_ADDRESS: process.env.WALLET_ADDRESS,
+    PRIVATE_KEY: process.env.PRIVATE_KEY,
+    SOLANA_RPC_URL: process.env.SOLANA_RPC_URL
+};
+
+// Validate environment variables
+Object.entries(REQUIRED_ENV_VARS).forEach(([key, value]) => {
+    if (!value) throw new Error(`${key} is required`);
+});
+
+// Configuration constants
+// Configuration constants
 const CONFIG = {
     CHAIN_ID: "501",
     BASE_COMPUTE_UNITS: 300000,
     MAX_COMPUTE_UNITS: 1200000,
-    MAX_RETRIES: 3,
-    RETRY_DELAY: 2000,
-    CONFIRMATION_TIMEOUT: 60000,
-    SLIPPAGE_BPS: 50, // 0.5%
+    MAX_RETRIES: 3 as const,  // Added as const
+    SLIPPAGE: "0.5",
+    MAX_PRICE_IMPACT: 3,
     PRIORITY_FEES: {
         LOW: 1_000,
         MEDIUM: 10_000,
@@ -113,396 +83,375 @@ const CONFIG = {
     }
 } as const;
 
-/**
- * Enhanced MEV Protection Class
- * 
- * Provides comprehensive validation and protection mechanisms against MEV attacks:
- * - Route analysis and validation
- * - Price impact monitoring
- * - Quote comparison across DEXes
- * - Transaction simulation
- */
-class EnhancedMEVProtection {
-    /**
-     * Validates swap safety by checking:
-     * 1. Route distribution
-     * 2. Price impact
-     * 3. Quote comparison
-     * 4. Minimum route requirements
-     */
-    static async validateSwapSafety(quote: any, expectedPrice: number): Promise<void> {
-        console.log("\nPerforming Enhanced MEV Protection Analysis...");
+const ENV = {
+    OKX_API_KEY: getRequiredEnvVar('OKX_API_KEY'),
+    OKX_SECRET_KEY: getRequiredEnvVar('OKX_SECRET_KEY'),
+    OKX_API_PASSPHRASE: getRequiredEnvVar('OKX_API_PASSPHRASE'),
+    OKX_PROJECT_ID: getRequiredEnvVar('OKX_PROJECT_ID'),
+    WALLET_ADDRESS: getRequiredEnvVar('WALLET_ADDRESS'),
+    PRIVATE_KEY: getRequiredEnvVar('PRIVATE_KEY'),
+    SOLANA_RPC_URL: getRequiredEnvVar('SOLANA_RPC_URL')
+} as const;
 
-        // Log the entire quote object for debugging
-        console.log("Quote data received:", JSON.stringify(quote, null, 2));
+// Helper functions
+function getRequiredEnvVar(name: string): string {
+    const value = process.env[name];
+    if (!value) throw new Error(`${name} is required`);
+    return value;
+}
 
-        // Check if quote has routerResult
-        const routerResult = quote.routerResult;
-        if (!routerResult || !routerResult.quoteCompareList || routerResult.quoteCompareList.length === 0) {
-            console.error("Quote comparison data is missing or empty");
-            throw new Error("No quote comparison data available");
+function assertString(value: string | undefined, name: string): string {
+    if (!value) throw new Error(`${name} is undefined`);
+    return value;
+}
+
+// Connection setup with MEV-resistant config
+const connection = new Connection(ENV.SOLANA_RPC_URL, {
+    confirmTransactionInitialTimeout: MEV_PROTECTION.MAX_IN_FLIGHT_DURATION_MS,
+    commitment: 'processed'
+});
+
+// MEV Protection Class
+class MEVProtection {
+    static async validateSwapSafety(
+        quote: any,
+        expectedPrice: number
+    ): Promise<void> {
+        console.log("Validating quote safety...");
+
+        // Extract routerResult if it exists
+        const routerResult = quote.routerResult || quote;
+        console.log("Router result:", JSON.stringify(routerResult, null, 2));
+
+        // Check price impact
+        const priceImpact = parseFloat(routerResult.priceImpactPercentage || '0') * 100;
+        if (priceImpact > MEV_PROTECTION.MAX_PRICE_IMPACT_BPS) {
+            throw new Error(`Price impact too high: ${priceImpact} bps`);
         }
 
-        // Create routes with comprehensive error handling
-        const routes: RouteInfo[] = routerResult.quoteCompareList.map((quoteItem: any, index: number) => {
-            // Safely parse amount out
-            const amountOut = parseFloat(quoteItem.amountOut || '0');
+        // Check if there are quotes to compare
+        const quoteCompareList = routerResult.quoteCompareList || [];
+        console.log("Quote comparisons found:", quoteCompareList.length);
 
-            return {
-                dexName: quoteItem.dexName || `Unknown DEX ${index + 1}`,
-                percentage: 100 / routerResult.quoteCompareList.length,
-                priceImpact: isNaN(amountOut) ? 0 : amountOut
-            };
-        });
-
-        // Log raw routes for debugging
-        console.log("\nRaw Route Distribution:", JSON.stringify(routes, null, 2));
-
-        // Filter out invalid routes
-        const validRoutes = routes.filter(route =>
-            route.priceImpact > 0 &&
-            !isNaN(route.priceImpact) &&
-            route.dexName !== 'Unknown'
-        );
-
-        // Ensure minimum number of valid routes
-        if (validRoutes.length < 2) {
-            console.error(`Insufficient valid quote comparisons: ${validRoutes.length}`);
-            throw new Error(`Insufficient valid quote comparisons: ${validRoutes.length}`);
+        if (quoteCompareList.length === 0) {
+            throw new Error('No quotes available for comparison');
         }
 
-        // Log the best route
-        const bestRoute = validRoutes.reduce((prev, current) =>
-            prev.priceImpact > current.priceImpact ? prev : current
-        );
-        console.log('\nBest Route:', bestRoute);
+        // Analyze quotes
+        const quotes = quoteCompareList.map((q: { amountOut: string; }) => parseFloat(q.amountOut));
+        console.log("Available quotes:", quotes);
 
-        console.log('\nEnhanced MEV protection checks passed ✅');
+        const bestQuote = Math.max(...quotes);
+        const avgQuote = quotes.reduce((a: any, b: any) => a + b, 0) / quotes.length;
+
+        // Check quote competitiveness
+        const quoteVariance = Math.abs(bestQuote - avgQuote) / bestQuote;
+        console.log("Quote variance:", quoteVariance);
+
+        if (quoteVariance > 0.01) {
+            console.log("Warning: Quote variance of", quoteVariance * 100, "% detected");
+        }
+
+        // Check output amount vs expected
+        const outputAmount = parseFloat(routerResult.toTokenAmount);
+        const priceDiff = Math.abs((outputAmount - expectedPrice) / expectedPrice * 100);
+
+        console.log("Output validation:");
+        console.log("- Actual output:", outputAmount);
+        console.log("- Expected output:", expectedPrice);
+        console.log("- Price difference:", priceDiff, "%");
+        console.log("- Slippage tolerance:", CONFIG.SLIPPAGE, "%");
+
+        if (priceDiff > parseFloat(CONFIG.SLIPPAGE)) {
+            throw new Error(`Output amount differs from expected by ${priceDiff}%`);
+        }
+
+        console.log("Quote validation passed ✅");
     }
 
-    /**
-     * Analyzes routes for MEV protection:
-     * - Validates route distribution
-     * - Checks price impact per route
-     * - Ensures minimum route requirements
-     */
-    private static analyzeRoutes(quote: any): RouteInfo[] {
-        // Use quoteCompareList directly from the quote object
-        const routes: RouteInfo[] = (quote.quoteCompareList || []).map((quoteItem: any) => ({
-            dexName: quoteItem.dexName,
-            percentage: 100 / (quote.quoteCompareList?.length || 1),
-            priceImpact: parseFloat(quoteItem.amountOut) // Use amountOut for price impact
-        }));
-
-        // Sort routes by output amount
-        routes.sort((a, b) => b.priceImpact - a.priceImpact);
-
-        return routes;
-    }
-
-    /**
-     * Simulates transaction to detect potential MEV attacks:
-     * - Validates expected output
-     * - Checks for transaction errors
-     * - Ensures computation limits
-     */
     static async simulateTransaction(
-        connection: Connection,
         tx: Transaction | VersionedTransaction,
         expectedMinOutput: number
     ): Promise<void> {
-        console.log("\nSimulating transaction...");
-
-        let simulation;
-        if (tx instanceof VersionedTransaction) {
-            simulation = await connection.simulateTransaction(tx);
-        } else {
-            simulation = await connection.simulateTransaction(tx as Transaction);
-        }
+        console.log("Simulating transaction...");
+        const simulation = tx instanceof VersionedTransaction ?
+            await connection.simulateTransaction(tx) :
+            await connection.simulateTransaction(tx as Transaction);
 
         if (simulation.value.err) {
             throw new Error(`Simulation failed: ${JSON.stringify(simulation.value.err)}`);
         }
-
         console.log("Transaction simulation successful ✅");
     }
 }
 
-/**
- * Enhanced Transaction Builder
- * 
- * Implements MEV protection mechanisms in transaction construction:
- * - Dynamic priority fees
- * - Compute budget adjustment
- * - Block height restrictions
- * - Transaction simulation
- */
-const EnhancedTransactionBuilder = {
-    /**
-     * Gets optimal priority fee to compete with MEV bots
-     * Uses median of recent fees with protection multiplier
-     */
-    async getPriorityFee(connection: Connection): Promise<number> {
-        try {
-            const priorityFees = await connection.getRecentPrioritizationFees();
-            const medianFee = priorityFees.sort((a, b) => a.prioritizationFee - b.prioritizationFee)[
-                Math.floor(priorityFees.length / 2)
-            ].prioritizationFee;
-            return medianFee;
-        } catch (err: unknown) {
-            const error = err instanceof Error ? err.message : 'Unknown error';
-            console.warn("Failed to get priority fee, using default:", error);
-            return CONFIG.PRIORITY_FEES.MEDIUM;
-        }
-    },
-
-    /**
-     * Builds protected transaction with:
-     * 1. Priority fee adjustment
-     * 2. Compute budget settings
-     * 3. Block height restrictions
-     * 4. Transaction simulation
-     */
-    async buildAndSignTransaction(
-        connection: Connection,
-        txData: any,
-        feePayer: Keypair,
-        toTokenAmount: number
-    ): Promise<Transaction> {
-        try {
-            // Create base transaction with higher priority
-            const transaction = new Transaction();
-            const { blockhash } = await connection.getLatestBlockhash('finalized');
-            transaction.recentBlockhash = blockhash;
-            transaction.feePayer = feePayer.publicKey;
-
-            // Enhanced MEV Protection
-            const slot = await connection.getSlot();
-            const blockHeight = await connection.getBlockHeight();
-
-            // Replace minBlockHeight with blocktime restriction
-            const minValidBlockTime = Date.now() + (MEV_PROTECTION.SANDWICH_PROTECTION.MIN_BLOCK_BUFFER * 1000);
-
-            // Add to transaction
-            transaction.add(
-                ComputeBudgetProgram.setComputeUnitPrice({
-                    microLamports: Math.floor(50_000 * MEV_PROTECTION.SANDWICH_PROTECTION.MAX_PRIORITY_FEE_MULTIPLIER)
-                }),
-                ComputeBudgetProgram.setComputeUnitLimit({
-                    units: Math.max(1_400_000, MEV_PROTECTION.FRONTRUN_PROTECTION.MIN_COMPUTE_UNITS)
-                })
-            );
-
-            // Set valid until time instead of block height
-            transaction.lastValidBlockHeight = (await connection.getBlockHeight()) + 150;
-
-            // Parse and add swap instructions
-            // const instructions = await getSwapInstructions({
-            //     userPublicKey: feePayer.publicKey.toString(),
-            //     quoteResponse: txData,
-            //     wrapAndUnwrapSol: true,
-            //     useSharedAccounts: true,
-            //     asLegacyTransaction: true
-            // });
-
-            const instructions = await getSwapInstructions({
-                // userPublicKey: feePayer.publicKey.toString(),
-                // quoteResponse: txData,
-                // wrapAndUnwrapSol: true,
-                // useSharedAccounts: true,
-                // asLegacyTransaction: true
-                chainId: 501,
-                amount: 100000000,
-                fromTokenAddress: '11111111111111111111111111111111',
-                toTokenAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-                slippage: 0.05,
-                priceImpactProtectionPercentage: 1,
-                userWallet: 'CZSSsQwcHNoiGXCsRaybSchkN2ycEWHos9veB5P9akJB',
-            });
-
-            
-            
-            // Add setup instructions first
-            if (instructions.setupInstructions?.length) {
-                transaction.add(...instructions.setupInstructions);
-            }
-
-            // Add main swap instruction
-            if (instructions.swapInstruction) {
-                transaction.add(instructions.swapInstruction);
-            }
-
-            // Add cleanup if needed
-            if (instructions.cleanupInstruction) {
-                transaction.add(instructions.cleanupInstruction);
-            }
-
-            // Sign transaction
-            transaction.partialSign(feePayer);
-
-            // Simulate before returning
-            await EnhancedMEVProtection.simulateTransaction(
-                connection,
-                transaction,
-                toTokenAmount
-            );
-
-            return transaction;
-        } catch (error) {
-            console.error('Transaction build error:', error);
-            throw new Error(`Invalid transaction data: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    },
-
-    /**
-     * Sends and confirms transaction with protection:
-     * - Retry mechanism
-     * - Confirmation validation
-     * - Error handling
-     */
-    async sendAndConfirmTransaction(
-        connection: Connection,
-        transaction: Transaction
-    ): Promise<string> {
-        try {
-            // Send transaction
-            const signature = await connection.sendRawTransaction(
-                transaction.serialize(),
-                {
-                    skipPreflight: false,
-                    preflightCommitment: 'confirmed',
-                    maxRetries: CONFIG.MAX_RETRIES
-                }
-            );
-
-            console.log(`\nTransaction sent: ${signature}`);
-            console.log(`Explorer URL: https://solscan.io/tx/${signature}`);
-
-            // Wait for confirmation
-            const confirmation = await connection.confirmTransaction({
-                signature,
-                blockhash: transaction.recentBlockhash!,
-                lastValidBlockHeight: (await connection.getBlockHeight()) + 150
-            }, 'confirmed');
-
-            if (confirmation.value.err) {
-                throw new Error(`Transaction failed: ${confirmation.value.err}`);
-            }
-
-            return signature;
-        } catch (error) {
-            console.error("Transaction send error:", error);
-            throw error;
-        }
-    }
-};
-
-// OKX API Class
+// Enhanced OKX API Class
 class OKXApi {
     private static readonly BASE_URL = "https://www.okx.com/api/v5/dex";
 
     private static getHeaders(timestamp: string, method: string, path: string, queryString = ""): Record<string, string> {
         const stringToSign = timestamp + method + path + queryString;
-        const sign = cryptoJS.enc.Base64.stringify(
-            cryptoJS.HmacSHA256(stringToSign, process.env.OKX_SECRET_KEY || '')
-        );
+        const secretKey = assertString(ENV.OKX_SECRET_KEY, 'OKX_SECRET_KEY');
 
         return {
             "Content-Type": "application/json",
-            "OK-ACCESS-KEY": process.env.OKX_API_KEY || '',
-            "OK-ACCESS-SIGN": sign,
+            "OK-ACCESS-KEY": ENV.OKX_API_KEY,
+            "OK-ACCESS-SIGN": cryptoJS.enc.Base64.stringify(
+                cryptoJS.HmacSHA256(stringToSign, secretKey)
+            ),
             "OK-ACCESS-TIMESTAMP": timestamp,
-            "OK-ACCESS-PASSPHRASE": process.env.OKX_API_PASSPHRASE || '',
-            "OK-ACCESS-PROJECT": process.env.OKX_PROJECT_ID || ''
+            "OK-ACCESS-PASSPHRASE": ENV.OKX_API_PASSPHRASE,
+            "OK-ACCESS-PROJECT": ENV.OKX_PROJECT_ID
         };
     }
 
     static async getTokenInfo(fromTokenAddress: string, toTokenAddress: string): Promise<SwapQuote> {
-        try {
-            const timestamp = new Date().toISOString();
-            const path = "/aggregator/quote";
-            const params = new URLSearchParams({
-                chainId: CONFIG.CHAIN_ID,
-                fromTokenAddress,
-                toTokenAddress,
-                amount: "1000000",
-                slippage: (CONFIG.SLIPPAGE_BPS / 10000).toString()
-            });
+        const timestamp = new Date().toISOString();
+        const path = "/aggregator/quote";
+        const params = new URLSearchParams({
+            chainId: CONFIG.CHAIN_ID,
+            fromTokenAddress,
+            toTokenAddress,
+            amount: "1000000",
+            slippage: CONFIG.SLIPPAGE
+        });
 
-            const response = await fetch(
-                `${this.BASE_URL}${path}?${params.toString()}`,
-                {
-                    headers: this.getHeaders(timestamp, "GET", `/api/v5/dex${path}`, `?${params.toString()}`),
-                    method: "GET"
-                }
-            );
-
-            const data = await response.json();
-            if (!response.ok || data.code !== "0" || !data.data?.[0]) {
-                throw new Error(`Failed to get quote: ${data.msg || response.statusText}`);
+        const response = await fetch(
+            `${this.BASE_URL}${path}?${params.toString()}`,
+            {
+                headers: this.getHeaders(timestamp, "GET", `/api/v5/dex${path}`, `?${params.toString()}`),
+                method: "GET"
             }
+        );
 
-            const quoteData = data.data[0];
-            return {
-                fromToken: {
-                    symbol: quoteData.fromToken.tokenSymbol,
-                    decimals: parseInt(quoteData.fromToken.decimal),
-                    price: quoteData.fromToken.tokenUnitPrice,
-                    isHoneyPot: quoteData.fromToken.isHoneyPot
-                },
-                toToken: {
-                    symbol: quoteData.toToken.tokenSymbol,
-                    decimals: parseInt(quoteData.toToken.decimal),
-                    price: quoteData.toToken.tokenUnitPrice,
-                    isHoneyPot: quoteData.toToken.isHoneyPot
-                },
-                quote: quoteData
-            };
-        } catch (err) {
-            const error = err as Error;
-            throw new Error(`Token info fetch failed: ${error.message || 'Unknown error'}`);
+        const data = await response.json();
+        if (!response.ok || data.code !== "0" || !data.data?.[0]) {
+            throw new Error(`Failed to get quote: ${data.msg || response.statusText}`);
         }
+
+        const quoteData = data.data[0];
+        const { fromToken, toToken } = quoteData;
+
+        return {
+            fromToken: {
+                symbol: fromToken.tokenSymbol,
+                decimals: parseInt(fromToken.decimal),
+                price: fromToken.tokenUnitPrice,
+                isHoneyPot: fromToken.isHoneyPot
+            },
+            toToken: {
+                symbol: toToken.tokenSymbol,
+                decimals: parseInt(toToken.decimal),
+                price: toToken.tokenUnitPrice,
+                isHoneyPot: toToken.isHoneyPot
+            },
+            quote: quoteData // Store full quote for MEV protection
+        };
     }
 
     static async getSwapTransaction(params: SwapParams): Promise<{ txData: string; quote: any }> {
+        const timestamp = new Date().toISOString();
+        const path = "/aggregator/swap";
+        const queryParams = new URLSearchParams({
+            chainId: CONFIG.CHAIN_ID,
+            slippage: CONFIG.SLIPPAGE,
+            amount: params.amount,
+            fromTokenAddress: params.fromTokenAddress,
+            toTokenAddress: params.toTokenAddress,
+            userWalletAddress: params.userAddress,
+            computeUnitPrice: params.computeUnitPrice
+        });
+
+        const response = await fetch(
+            `${this.BASE_URL}${path}?${queryParams.toString()}`,
+            {
+                headers: this.getHeaders(timestamp, "GET", `/api/v5/dex${path}`, `?${queryParams.toString()}`),
+                method: "GET"
+            }
+        );
+
+        const data = await response.json();
+        if (!response.ok || data.code !== "0" || !data.data?.[0]) {
+            throw new Error(`Swap quote failed: ${data.msg || response.statusText}`);
+        }
+
+        const swapData = data.data[0];
+        const txData = swapData.tx?.data;
+        if (!txData || typeof txData !== 'string') {
+            throw new Error("Invalid transaction data received");
+        }
+
+        return {
+            txData,
+            quote: swapData  // Return the complete swap data
+        };
+    }
+}
+
+// Enhanced Transaction Builder
+// First, let's define some types
+interface SignatureStatus {
+    err: any | null;
+    confirmationStatus?: 'processed' | 'confirmed' | 'finalized';
+    confirmations?: number | null;
+    slot?: number;
+}
+
+interface SignatureStatusResponse {
+    context: { slot: number };
+    value: SignatureStatus | null;
+}
+
+class TransactionBuilder {
+    static async buildAndSignProtectedTransaction(
+        txData: string,
+        feePayer: Keypair,
+        expectedOutput: number
+    ): Promise<Transaction | VersionedTransaction> {
+        const decodedTx = base58.decode(txData);
+        const recentBlockhash = await connection.getLatestBlockhash('processed');
+
+        let tx: Transaction | VersionedTransaction;
         try {
-            const timestamp = new Date().toISOString();
-            const path = "/aggregator/swap";
-            const queryParams = new URLSearchParams({
-                chainId: CONFIG.CHAIN_ID,
-                slippage: (CONFIG.SLIPPAGE_BPS / 10000).toString(),
-                amount: params.amount,
-                fromTokenAddress: params.fromTokenAddress,
-                toTokenAddress: params.toTokenAddress,
-                userWalletAddress: params.userAddress,
-                computeUnitPrice: params.computeUnitPrice
+            tx = VersionedTransaction.deserialize(decodedTx);
+            tx.message.recentBlockhash = recentBlockhash.blockhash;
+        } catch {
+            tx = Transaction.from(decodedTx);
+            tx.recentBlockhash = recentBlockhash.blockhash;
+            tx.feePayer = feePayer.publicKey;
+        }
+
+        // Compute units for better success rate
+        const computeBudgetIx = ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: await this.getPriorityFee()
+        });
+
+        if (tx instanceof Transaction) {
+            tx.add(computeBudgetIx);
+        }
+
+        // Simulate before signing
+        await MEVProtection.simulateTransaction(tx, expectedOutput);
+
+        // Sign the transaction
+        if (tx instanceof VersionedTransaction) {
+            tx.sign([feePayer]);
+        } else {
+            tx.partialSign(feePayer);
+        }
+
+        return tx;
+    }
+
+    static async sendAndConfirmProtectedTransaction(
+        tx: Transaction | VersionedTransaction
+    ): Promise<string> {
+        const startTime = Date.now();
+        const MAX_TIMEOUT = 120000; // 120 seconds
+        const CHECK_INTERVAL = 3000; // Check every 3 seconds
+        const CONFIRMATION_BLOCKS = 32;
+
+        console.log("Preparing to send transaction with maximum priority...");
+
+        // Add priority fee instruction
+        if (tx instanceof Transaction) {
+            const priorityFee = await this.getPriorityFee();
+            console.log(`Using priority fee: ${priorityFee} microLamports`);
+
+            const computeBudgetIx = ComputeBudgetProgram.setComputeUnitPrice({
+                microLamports: priorityFee
+            });
+            tx.instructions.unshift(computeBudgetIx);
+        }
+
+        console.log("Sending transaction...");
+        const txId = await connection.sendRawTransaction(tx.serialize(), {
+            skipPreflight: false,
+            maxRetries: 5,
+            preflightCommitment: 'confirmed'
+        });
+
+        console.log(`Transaction sent: ${txId}`);
+        console.log(`Explorer URL: https://solscan.io/tx/${txId}`);
+        console.log("Waiting for confirmation...");
+
+        let lastStatus: SignatureStatus | null = null;
+        try {
+            // Get initial blockhash
+            const { blockhash, lastValidBlockHeight } =
+                await connection.getLatestBlockhash('confirmed');
+
+            // Setup status monitoring
+            const statusCheckPromise = new Promise<SignatureStatusResponse>(async (resolve, reject) => {
+                const interval = setInterval(async () => {
+                    try {
+                        const status = await connection.getSignatureStatus(txId);
+
+                        if (status.value !== lastStatus) {
+                            console.log(`Status update: ${JSON.stringify(status.value || 'pending')}`);
+                            lastStatus = status.value;
+                        }
+
+                        if (status.value?.confirmationStatus === 'confirmed' ||
+                            status.value?.confirmationStatus === 'finalized') {
+                            clearInterval(interval);
+                            resolve(status);
+                        } else if (status.value?.err) {
+                            clearInterval(interval);
+                            reject(new Error(`Transaction failed: ${JSON.stringify(status.value.err)}`));
+                        }
+                    } catch (e) {
+                        console.log("Error checking status:", e);
+                    }
+                }, CHECK_INTERVAL);
+
+                // Set timeout
+                setTimeout(() => {
+                    clearInterval(interval);
+                    reject(new Error('Transaction confirmation timeout - check explorer for final status'));
+                }, MAX_TIMEOUT);
             });
 
-            const response = await fetch(
-                `${this.BASE_URL}${path}?${queryParams.toString()}`,
-                {
-                    headers: this.getHeaders(timestamp, "GET", `/api/v5/dex${path}`, `?${queryParams.toString()}`),
-                    method: "GET"
-                }
-            );
+            // Wait for confirmation or timeout
+            const confirmation = await Promise.race([
+                statusCheckPromise,
+                connection.confirmTransaction({
+                    signature: txId,
+                    blockhash,
+                    lastValidBlockHeight: lastValidBlockHeight + CONFIRMATION_BLOCKS
+                }, 'confirmed')
+            ]);
 
-            const data = await response.json();
-            if (!response.ok || data.code !== "0" || !data.data?.[0]) {
-                throw new Error(`Swap quote failed: ${data.msg || response.statusText}`);
+            // Check for errors
+            if ('value' in confirmation && confirmation.value?.err) {
+                throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
             }
 
-            const swapData = data.data[0];
-            if (!swapData.tx?.data || typeof swapData.tx.data !== 'string') {
-                throw new Error("Invalid transaction data received");
-            }
+            const duration = Date.now() - startTime;
+            console.log(`Transaction confirmed in ${duration}ms`);
+            console.log(`Final status: ${JSON.stringify(lastStatus)}`);
+            return txId;
 
-            return {
-                txData: swapData.tx.data,
-                quote: swapData
-            };
-        } catch (err) {
-            const error = err as Error;
-            throw new Error(`Failed to get swap transaction: ${error.message || 'Unknown error'}`);
+        } catch (error) {
+            const duration = Date.now() - startTime;
+            console.log(`Transaction processing time: ${duration}ms`);
+            console.log("Last known status:", lastStatus);
+            console.log("Check transaction status at:");
+            console.log(`https://solscan.io/tx/${txId}`);
+            throw error;
+        }
+    }
+
+    static async getPriorityFee(): Promise<number> {
+        try {
+            const recentFees = await connection.getRecentPrioritizationFees();
+            if (recentFees.length === 0) return CONFIG.PRIORITY_FEES.VERY_HIGH;
+
+            const maxFee = Math.max(...recentFees.map(fee => fee.prioritizationFee));
+            // More aggressive fee strategy
+            return Math.min(maxFee * 3, CONFIG.PRIORITY_FEES.VERY_HIGH * 2);
+        } catch {
+            return CONFIG.PRIORITY_FEES.VERY_HIGH;
         }
     }
 }
@@ -516,101 +465,94 @@ function convertAmount(amount: string, decimals: number): string {
     return new BN(Math.floor(value * Math.pow(10, decimals))).toString();
 }
 
-/**
- * Main execution function with comprehensive MEV protection
- * 
- * Implements full protection flow:
- * 1. Token validation and honeypot detection
- * 2. Route analysis and splitting
- * 3. Priority fee optimization
- * 4. Protected transaction building and execution
- */
+// Main execution function with MEV protection
 async function executeProtectedSwap(
     amount: string,
     fromTokenAddress: string,
     toTokenAddress: string
 ): Promise<string> {
-    try {
-        // Validation
-        if (!process.env.SOLANA_RPC_URL) throw new Error("SOLANA_RPC_URL is required");
-        if (!process.env.PRIVATE_KEY) throw new Error("PRIVATE_KEY is required");
-        if (!process.env.WALLET_ADDRESS) throw new Error("WALLET_ADDRESS is required");
-
-        console.log("\nStarting protected swap with parameters:");
-        console.log("Amount:", amount);
-        console.log("From Token:", fromTokenAddress);
-        console.log("To Token:", toTokenAddress);
-        console.log("Wallet Address:", process.env.WALLET_ADDRESS);
-
-        // Initialize connection
-        const connection = new Connection(process.env.SOLANA_RPC_URL, {
-            commitment: 'confirmed',
-            confirmTransactionInitialTimeout: CONFIG.CONFIRMATION_TIMEOUT
-        });
-
-        // Get token information
-        console.log("\nFetching token information...");
-        const tokenInfo = await OKXApi.getTokenInfo(fromTokenAddress, toTokenAddress);
-        console.log("Token info received:", JSON.stringify(tokenInfo, null, 2));
-
-        if (tokenInfo.toToken.isHoneyPot) {
-            throw new Error("Destination token detected as potential honeypot");
+    const MAX_RETRIES = 3;
+    const retry = async <T>(
+        fn: () => Promise<T>,
+        retries: number = MAX_RETRIES
+    ): Promise<T> => {
+        try {
+            return await fn();
+        } catch (error) {
+            if (retries <= 0) throw error;
+            console.log(`Retrying... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            return retry(fn, retries - 1);
         }
+    };
 
-        // Convert amount to raw format
-        const rawAmount = convertAmount(amount, tokenInfo.fromToken.decimals);
-        console.log("\nConverted amount:", rawAmount);
+    console.log("Starting protected swap with parameters:");
+    console.log("Amount:", amount);
+    console.log("From Token:", fromTokenAddress);
+    console.log("To Token:", toTokenAddress);
+    console.log("Wallet Address:", ENV.WALLET_ADDRESS);
 
-        // Get optimized priority fee
-        const priorityFee = await EnhancedTransactionBuilder.getPriorityFee(connection);
-        console.log("Initial priority fee:", priorityFee);
+    // Get token information with validation
+    const tokenInfo = await retry(async () => {
+        console.log("\nFetching token information...");
+        return await OKXApi.getTokenInfo(fromTokenAddress, toTokenAddress);
+    });
 
-        // Get swap quote with MEV protection
-        console.log("\nRequesting protected swap transaction...");
-        const { txData, quote } = await OKXApi.getSwapTransaction({
+    console.log("Token info received:", tokenInfo);
+
+    // Validate token safety
+    if (tokenInfo.toToken.isHoneyPot) {
+        throw new Error("Destination token detected as potential honeypot");
+    }
+
+    // Convert amount
+    const rawAmount = convertAmount(amount, tokenInfo.fromToken.decimals);
+    console.log("\nConverted amount:", rawAmount);
+
+    // Get optimized priority fee
+    const priorityFee = await TransactionBuilder.getPriorityFee();
+    console.log("Priority fee:", priorityFee);
+
+    // Get swap quote with MEV protection
+    console.log("\nRequesting protected swap transaction...");
+    // Get swap quote with MEV protection
+    console.log("\nRequesting protected swap transaction...");
+    const { txData, quote } = await retry(async () => {
+        return await OKXApi.getSwapTransaction({
             amount: rawAmount,
             fromTokenAddress,
             toTokenAddress,
-            userAddress: process.env.WALLET_ADDRESS,
+            userAddress: ENV.WALLET_ADDRESS,
             computeUnitPrice: priorityFee.toString()
         });
+    });
 
-        // Calculate expected amount for validation
-        const expectedAmount = Math.floor(
-            parseFloat(amount) *
-            parseFloat(tokenInfo.fromToken.price) /
-            parseFloat(tokenInfo.toToken.price) *
-            Math.pow(10, tokenInfo.toToken.decimals)
-        );
+    const expectedAmount = Math.floor(
+        parseFloat(amount) *
+        parseFloat(tokenInfo.fromToken.price) *
+        Math.pow(10, tokenInfo.toToken.decimals)
+    );
 
-        // Validate swap safety
-        await EnhancedMEVProtection.validateSwapSafety(quote, expectedAmount);
+    await MEVProtection.validateSwapSafety(quote, expectedAmount);
+    console.log("Transaction data received");
 
-        // Create keypair for signing
-        const feePayer = Keypair.fromSecretKey(
-            Uint8Array.from(base58.decode(process.env.PRIVATE_KEY))
-        );
+    // Create keypair for signing
+    const feePayer = Keypair.fromSecretKey(
+        Uint8Array.from(base58.decode(ENV.PRIVATE_KEY))
+    );
 
-        // Build and sign protected transaction
-        console.log("\nBuilding and signing protected transaction...");
-        const protectedTx = await EnhancedTransactionBuilder.buildAndSignTransaction(
-            connection,
-            quote.tx,
-            feePayer,
-            parseFloat(quote.routerResult.toTokenAmount)
-        );
+    console.log("\nBuilding and signing protected transaction...");
+    const protectedTx = await TransactionBuilder.buildAndSignProtectedTransaction(
+        txData,
+        feePayer,
+        parseFloat(quote.toTokenAmount)
+    );
 
-        // Send and confirm with protection
-        console.log("\nSending protected transaction...");
-        return await EnhancedTransactionBuilder.sendAndConfirmTransaction(
-            connection,
-            protectedTx
-        );
-    } catch (err) {
-        const error = err as Error;
-        console.error("Detailed error:", error);
-        throw new Error(`Swap execution failed: ${error.message || 'Unknown error'}`);
-    }
+    console.log("Protected transaction built and signed");
+
+    // Send and confirm with protection
+    console.log("\nSending protected transaction...");
+    return await TransactionBuilder.sendAndConfirmProtectedTransaction(protectedTx);
 }
 
 // CLI execution
@@ -624,12 +566,11 @@ async function main() {
         }
 
         const txId = await executeProtectedSwap(amount, fromTokenAddress, toTokenAddress);
-        console.log("\nTransaction successful! ✅");
+        console.log("Transaction successful!");
         console.log("Transaction ID:", txId);
         console.log("Explorer URL:", `https://solscan.io/tx/${txId}`);
-    } catch (err) {
-        const error = err as Error;
-        console.error("\nError:", error.message || "Unknown error");
+    } catch (error) {
+        console.error("Error:", error instanceof Error ? error.message : "Unknown error");
         process.exit(1);
     }
 }
@@ -643,26 +584,6 @@ if (require.main === module) {
 export {
     executeProtectedSwap,
     OKXApi,
-    EnhancedTransactionBuilder,
-    EnhancedMEVProtection,
-    CONFIG,
-    MEV_PROTECTION
+    TransactionBuilder,
+    MEVProtection
 };
-
-async function getSwapInstructions(params: any) {
-    const response = await fetch('https://beta.okex.org/api/v5/dex/aggregator/swap-instruction', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
-    });
-    return await response.json();
-}
-// Jupiter endpoint
-// async function getSwapInstructions(params: any) {
-//     const response = await fetch('https://quote-api.jup.ag/v6/swap-instructions', {
-//         method: 'POST',
-//         headers: { 'Content-Type': 'application/json' },
-//         body: JSON.stringify(params)
-//     });
-//     return await response.json();
-// }
