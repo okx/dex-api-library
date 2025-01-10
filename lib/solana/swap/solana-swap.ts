@@ -16,15 +16,14 @@ const projectId = process.env.OKX_PROJECT_ID;
 const userAddress = process.env.WALLET_ADDRESS;
 const userPrivateKey = process.env.PRIVATE_KEY;
 const solanaRpcUrl = process.env.SOLANA_RPC_URL;
-const solanaWsUrl = process.env.SOLANA_WS_URL;
+
 // Constants
 const SOLANA_CHAIN_ID = "501";
 const COMPUTE_UNITS = 300000;
 const MAX_RETRIES = 3;
 
 const connection = new Connection(`${solanaRpcUrl}`, {
-    confirmTransactionInitialTimeout: 5000,
-    wsEndpoint: solanaWsUrl,
+    confirmTransactionInitialTimeout: 5000
 });
 
 
