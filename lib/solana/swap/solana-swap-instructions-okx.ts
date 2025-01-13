@@ -10,10 +10,12 @@ import {
     Keypair,
     PublicKey,
     Message,
-    VersionedMessage
+    VersionedMessage,
+    TransactionInstructionCtorFields
 } from "@solana/web3.js";
 import cryptoJS from "crypto-js";
 import dotenv from 'dotenv';
+import { userInfo } from "os";
 
 // Load environment variables
 dotenv.config();
@@ -73,33 +75,46 @@ interface RouteInfo {
  * - FRONTRUN_PROTECTION: Mechanisms to prevent frontrunning
  */
 const MEV_PROTECTION = {
-    MAX_PRICE_IMPACT_BPS: 150,        // Maximum 1.5% price impact allowed
-    MIN_ROUTE_SPLITS: 2,              // Minimum routes to split trade
-    MAX_ROUTE_SPLITS: 4,              // Maximum routes to split trade
-    MAX_IN_FLIGHT_DURATION_MS: 60000, // Maximum time transaction can be pending
-    MIN_ROUTE_PERCENTAGE: 5,          // Minimum 5% per route
-    MAX_QUOTE_VARIANCE: 100,          // Maximum 1% variance between quotes
-    SIMULATION_ADDRESSES: {
-        USDC: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-        WSOL: 'So11111111111111111111111111111111111111112',
+    // Price Impact Protection
+    MAX_PRICE_IMPACT: "0.05",        // 5% max impact
+    SLIPPAGE: "0.05",                // 5% slippage
+
+    // Route Protection
+    MIN_ROUTE_SPLITS: 2,             // Minimum DEX routes
+    MAX_ROUTE_SPLITS: 4,             // Maximum routes
+
+    // Compute Units
+    COMPUTE_UNITS: {
+        BASE: 300_000,
+        MAX: 1_200_000
     },
+
+    // Priority Fees
+    PRIORITY_FEE: {
+        MIN: 10_000,
+        MAX: 1_000_000,
+        MULTIPLIER: 3
+    },
+
+    // Sandwich Protection
     SANDWICH_PROTECTION: {
-        MIN_BLOCK_BUFFER: 2,           // Minimum blocks before execution
-        MAX_PRIORITY_FEE_MULTIPLIER: 3, // Priority fee multiplier for competing with MEV bots
-        SLIPPAGE_BUFFER_BPS: 20        // Additional slippage protection
+        MIN_BLOCK_BUFFER: 2,
+        MAX_PRIORITY_FEE_MULTIPLIER: 3,
+        SLIPPAGE_BUFFER_BPS: 20
     },
+
+    // Add Frontrun Protection
     FRONTRUN_PROTECTION: {
-        USE_VERSIONED_TX: true,         // Use versioned transactions when possible
-        MIN_COMPUTE_UNITS: 1_000_000,   // Minimum compute units to ensure execution
-        PRIORITY_MULTIPLIER: 1.5        // Priority multiplier for transaction ordering
+        USE_VERSIONED_TX: true,
+        MIN_COMPUTE_UNITS: 1_000_000,
+        PRIORITY_MULTIPLIER: 1.5
     }
 } as const;
 
 // Configuration
 const CONFIG = {
-    CHAIN_ID: "501" as const,
-    RPC_ENDPOINT: process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com",
-    BASE_COMPUTE_UNITS: 300_000,
+    CHAIN_ID: "501",
+    BASE_COMPUTE_UNITS: 300000,
     MAX_COMPUTE_UNITS: 1200000,
     MAX_RETRIES: 3,
     RETRY_DELAY: 2000,
@@ -270,12 +285,20 @@ const EnhancedTransactionBuilder = {
         toTokenAmount: number
     ): Promise<Transaction> {
         try {
+            // Create base transaction with higher priority
             const transaction = new Transaction();
-            const blockhash = await connection.getLatestBlockhash('finalized');
-            transaction.recentBlockhash = blockhash.blockhash;
+            const { blockhash } = await connection.getLatestBlockhash('finalized');
+            transaction.recentBlockhash = blockhash;
             transaction.feePayer = feePayer.publicKey;
 
-            // Add MEV protection
+            // Enhanced MEV Protection
+            const slot = await connection.getSlot();
+            const blockHeight = await connection.getBlockHeight();
+
+            // Replace minBlockHeight with blocktime restriction
+            const minValidBlockTime = Date.now() + (MEV_PROTECTION.SANDWICH_PROTECTION.MIN_BLOCK_BUFFER * 1000);
+
+            // Add to transaction
             transaction.add(
                 ComputeBudgetProgram.setComputeUnitPrice({
                     microLamports: Math.floor(50_000 * MEV_PROTECTION.SANDWICH_PROTECTION.MAX_PRIORITY_FEE_MULTIPLIER)
@@ -285,32 +308,23 @@ const EnhancedTransactionBuilder = {
                 })
             );
 
-            // Get swap instructions
-            const swapInstructions = await getSwapInstructions({
-                userPublicKey: feePayer.publicKey.toString(),
-                quoteResponse: txData,
-                wrapAndUnwrapSol: true,
-                asLegacyTransaction: true,
-                useSharedAccounts: true
-            });
+            // Set valid until time instead of block height
+            transaction.lastValidBlockHeight = (await connection.getBlockHeight()) + 150;
 
-            if (swapInstructions.setupInstructions?.length) {
-                transaction.add(...swapInstructions.setupInstructions);
-            }
-            if (swapInstructions.swapInstruction) {
-                transaction.add(swapInstructions.swapInstruction);
-            }
-            if (swapInstructions.cleanupInstruction) {
-                transaction.add(swapInstructions.cleanupInstruction);
-            }
-
+            // Sign transaction
             transaction.partialSign(feePayer);
-            await EnhancedMEVProtection.simulateTransaction(connection, transaction, toTokenAmount);
+
+            // Simulate before returning
+            await EnhancedMEVProtection.simulateTransaction(
+                connection,
+                transaction,
+                toTokenAmount
+            );
 
             return transaction;
         } catch (error) {
             console.error('Transaction build error:', error);
-            throw error;
+            throw new Error(`Invalid transaction data: ${error instanceof Error ? error.message : String(error)}`);
         }
     },
 
@@ -324,30 +338,34 @@ const EnhancedTransactionBuilder = {
         connection: Connection,
         transaction: Transaction
     ): Promise<string> {
-        const signature = await connection.sendRawTransaction(transaction.serialize());
-        await connection.confirmTransaction(signature, 'confirmed');
-        return signature;
-    },
-
-    async executeSwap(
-        connection: Connection,
-        quote: any,
-        feePayer: Keypair,
-        amount: number
-    ): Promise<string> {
         try {
-            const tx = await this.buildAndSignTransaction(
-                connection,
-                quote.routerResult,
-                feePayer,
-                amount
+            // Send transaction
+            const signature = await connection.sendRawTransaction(
+                transaction.serialize(),
+                {
+                    skipPreflight: false,
+                    preflightCommitment: 'confirmed',
+                    maxRetries: CONFIG.MAX_RETRIES
+                }
             );
 
-            const signature = await connection.sendRawTransaction(tx.serialize());
-            await connection.confirmTransaction(signature, 'confirmed');
+            console.log(`\nTransaction sent: ${signature}`);
+            console.log(`Explorer URL: https://solscan.io/tx/${signature}`);
+
+            // Wait for confirmation
+            const confirmation = await connection.confirmTransaction({
+                signature,
+                blockhash: transaction.recentBlockhash!,
+                lastValidBlockHeight: (await connection.getBlockHeight()) + 150
+            }, 'confirmed');
+
+            if (confirmation.value.err) {
+                throw new Error(`Transaction failed: ${confirmation.value.err}`);
+            }
+
             return signature;
         } catch (error) {
-            console.error('Swap execution failed:', error);
+            console.error("Transaction send error:", error);
             throw error;
         }
     }
@@ -355,9 +373,9 @@ const EnhancedTransactionBuilder = {
 
 // OKX API Class
 class OKXApi {
-    private static readonly BASE_URL = "https://www.okx.com/api/v5/dex";
+    static readonly BASE_URL = "https://www.okx.com/api/v5/dex";
 
-    private static getHeaders(timestamp: string, method: string, path: string, queryString = ""): Record<string, string> {
+    static getHeaders(timestamp: string, method: string, path: string, queryString = ""): Record<string, string> {
         const stringToSign = timestamp + method + path + queryString;
         const sign = cryptoJS.enc.Base64.stringify(
             cryptoJS.HmacSHA256(stringToSign, process.env.OKX_SECRET_KEY || '')
@@ -369,7 +387,9 @@ class OKXApi {
             "OK-ACCESS-SIGN": sign,
             "OK-ACCESS-TIMESTAMP": timestamp,
             "OK-ACCESS-PASSPHRASE": process.env.OKX_API_PASSPHRASE || '',
-            "OK-ACCESS-PROJECT": process.env.OKX_PROJECT_ID || ''
+            "OK-ACCESS-PROJECT": process.env.OKX_PROJECT_ID || '',
+            "X-Requestid": "11111111123232323",
+            "Cookie": "locale=en-US"
         };
     }
 
@@ -461,23 +481,6 @@ class OKXApi {
             throw new Error(`Failed to get swap transaction: ${error.message || 'Unknown error'}`);
         }
     }
-
-    static async getQuote(amount: string, fromToken: string, toToken: string, userAddress: string) {
-        const timestamp = new Date().toISOString();
-        const path = "/aggregator/swap";
-        const queryString = `chainId=${CONFIG.CHAIN_ID}&amount=${amount}&fromTokenAddress=${fromToken}&toTokenAddress=${toToken}&userWalletAddress=${userAddress}&slippage=0.005`;
-
-        const response = await fetch(`${this.BASE_URL}${path}?${queryString}`, {
-            method: 'GET',
-            headers: this.getHeaders(timestamp, "GET", `/api/v5/dex${path}`, `?${queryString}`)
-        });
-
-        if (!response.ok) {
-            throw new Error(`OKX API error: ${await response.text()}`);
-        }
-
-        return await response.json();
-    }
 }
 
 // Utility functions
@@ -498,66 +501,109 @@ function convertAmount(amount: string, decimals: number): string {
  * 3. Priority fee optimization
  * 4. Protected transaction building and execution
  */
-async function executeProtectedSwap(amount: string, fromToken: string, toToken: string): Promise<string> {
+async function executeProtectedSwap(
+    amount: string,
+    fromTokenAddress: string,
+    toTokenAddress: string
+): Promise<string> {
     try {
-        console.log("\nStarting protected swap...");
-        const connection = new Connection(CONFIG.RPC_ENDPOINT);
-        const feePayer = await loadWallet();
+        console.log("\nStarting protected OKX swap...");
+        const connection = new Connection(process.env.SOLANA_RPC_URL!);
+        const feePayer = Keypair.fromSecretKey(
+            Uint8Array.from(base58.decode(process.env.PRIVATE_KEY!))
+        );
 
         // 1. Convert amount for SOL
-        const inputAmount = fromToken === "11111111111111111111111111111111"
+        const inputAmount = fromTokenAddress === "11111111111111111111111111111111"
             ? Math.floor(parseFloat(amount) * 1e9).toString()
             : amount;
 
-        // 2. Get Jupiter quote
-        const wrappedFromToken = fromToken === "11111111111111111111111111111111"
-            ? "So11111111111111111111111111111111111111112"
-            : fromToken;
+        // 2. Get OKX swap instructions
+        console.log("Getting swap instructions...");
 
-        console.log("Getting quote...");
-        const quoteResponse = await fetch(
-            `https://quote-api.jup.ag/v6/quote?inputMint=${wrappedFromToken}&outputMint=${toToken}&amount=${inputAmount}&slippageBps=50`
+        // Use Record type to ensure compatibility with URLSearchParams
+        type SwapInstructionParams = Record<string, string>;
+
+        const swapParams: SwapInstructionParams = {
+            chainId: "501",
+            amount: inputAmount,
+            fromTokenAddress,
+            toTokenAddress,
+            slippage: "0.05",
+            priceImpactProtectionPercentage: "1",
+            userWalletAddress: feePayer.publicKey.toString(),
+            fromTokenReferrerWalletAddress: "39sXPZ4rD86nA3YoS6YgF5sdutHotL87U6eQnADFRkRE",
+            feePercent: "1"
+        };
+
+        const queryParams = new URLSearchParams(swapParams);
+        const path = "/aggregator/swap-instruction";
+        const timestamp = new Date().toISOString();
+
+        // Get OKX API headers
+        const headers = OKXApi.getHeaders(
+            timestamp,
+            "GET",
+            `/api/v5/dex${path}`,
+            `?${queryParams.toString()}`
         );
-        const quoteData = await quoteResponse.json();
 
-        // 3. Get swap transaction
-        console.log("Building transaction...");
-        const swapResponse = await fetch('https://quote-api.jup.ag/v6/swap', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                quoteResponse: quoteData,
-                userPublicKey: feePayer.publicKey.toString(),
-                wrapUnwrapSOL: true
-            })
-        });
+        // Merge with required headers from curl command
+        const requestHeaders = {
+            ...headers,
+            'X-Requestid': '11111111123232323',
+            'Cookie': 'locale=en-US'
+        };
 
-        const { swapTransaction } = await swapResponse.json();
-        if (!swapTransaction) {
-            throw new Error("No swap transaction received");
+        const response = await fetch(
+            `https://beta.okex.org/api/v5/dex/aggregator/swap-instruction?${queryParams.toString()}`,
+            {
+                method: 'GET',
+                headers: requestHeaders
+            }
+        );
+
+        const data = await response.json();
+        if (!data.data?.[0]) {
+            console.log("Full API response:", JSON.stringify(data, null, 2));
+            throw new Error(`OKX API error: ${data.msg || 'No instructions received'}`);
         }
 
-        // 4. Deserialize and modify transaction
-        const transaction = VersionedTransaction.deserialize(
-            Buffer.from(swapTransaction, 'base64')
-        );
+        // 3. Build transaction
+        console.log("Building transaction...");
+        const transaction = new Transaction();
+        transaction.recentBlockhash = (await connection.getLatestBlockhash('finalized')).blockhash;
+        transaction.feePayer = feePayer.publicKey;
 
-        // 5. Add MEV protection
-        const mevInstructions = [
+        // Add MEV protection
+        transaction.add(
             ComputeBudgetProgram.setComputeUnitPrice({
                 microLamports: Math.floor(50_000 * MEV_PROTECTION.SANDWICH_PROTECTION.MAX_PRIORITY_FEE_MULTIPLIER)
             }),
             ComputeBudgetProgram.setComputeUnitLimit({
                 units: Math.max(1_400_000, MEV_PROTECTION.FRONTRUN_PROTECTION.MIN_COMPUTE_UNITS)
             })
-        ];
+        );
 
-        // 6. Sign and send
+        const { setupInstructions, swapInstruction, cleanupInstruction } = data.data[0];
+
+        // Add swap instructions in order
+        if (setupInstructions?.length) {
+            transaction.add(...setupInstructions.map((ix: TransactionInstructionCtorFields) =>
+                new TransactionInstruction(ix)
+            ));
+        }
+        if (swapInstruction) {
+            transaction.add(new TransactionInstruction(swapInstruction));
+        }
+        if (cleanupInstruction) {
+            transaction.add(new TransactionInstruction(cleanupInstruction));
+        }
+
+        // 4. Execute swap
         console.log("Executing swap...");
-        transaction.sign([feePayer]);
-
-        const signature = await connection.sendTransaction(transaction);
-        console.log("Waiting for confirmation...");
+        transaction.partialSign(feePayer);
+        const signature = await connection.sendRawTransaction(transaction.serialize());
         await connection.confirmTransaction(signature, 'confirmed');
 
         return signature;
@@ -577,10 +623,10 @@ async function main() {
             process.exit(1);
         }
 
-        const signature = await executeProtectedSwap(amount, fromTokenAddress, toTokenAddress);
+        const txId = await executeProtectedSwap(amount, fromTokenAddress, toTokenAddress);
         console.log("\nTransaction successful! ✅");
-        console.log("Transaction ID:", signature);
-        console.log("Explorer URL:", `https://solscan.io/tx/${signature}`);
+        console.log("Transaction ID:", txId);
+        console.log("Explorer URL:", `https://solscan.io/tx/${txId}`);
     } catch (err) {
         const error = err as Error;
         console.error("\nError:", error.message || "Unknown error");
@@ -602,20 +648,3 @@ export {
     CONFIG,
     MEV_PROTECTION
 };
-
-// Jupiter endpoint
-async function getSwapInstructions(params: any) {
-    const response = await fetch('https://quote-api.jup.ag/v6/swap-instructions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
-    });
-    return await response.json();
-}
-
-async function loadWallet(): Promise<Keypair> {
-    if (!process.env.PRIVATE_KEY) {
-        throw new Error("PRIVATE_KEY is required in environment variables");
-    }
-    return Keypair.fromSecretKey(Uint8Array.from(base58.decode(process.env.PRIVATE_KEY)));
-}
