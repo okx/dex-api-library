@@ -30,7 +30,7 @@ interface SwapQuote {
     quote?: any;
 }
 
-type SwapParams = Record<string, string> & {
+interface SwapParams {
     chainId: string;
     amount: string;
     fromTokenAddress: string;
@@ -40,6 +40,12 @@ type SwapParams = Record<string, string> & {
     userWalletAddress: string;
     feePercent: string;
     fromTokenReferrerWalletAddress: string;
+    swap2?: string
+    commission_spl_swap2?: string
+    commission_sol_swap2?: string
+    proxy_swap?: string
+    commission_sol_proxy_swap?: string
+    commission_spl_proxy_swap?: string
 }
 
 interface RouteInfo {
@@ -118,7 +124,7 @@ class OKXApi {
         }
     }
 
-    static async getSwapInstructions(params: SwapParams): Promise<any> {
+    static async getSwapInstructions(params: any): Promise<any> {
         try {
             console.log("\nGetting swap instructions...");
             const requestPath = '/api/v5/dex/aggregator/swap-instruction';
@@ -151,9 +157,9 @@ class OKXApi {
             }
 
             const data = await response.json();
-            console.log("---------------------------BREAKPOINT--------------------------")
+            console.log("---------------------------DATA--------------------------")
             console.log(JSON.stringify(data, null, 2));
-            console.log("---------------------------BREAKPOINT--------------------------")
+            console.log("---------------------------DATA--------------------------")
             if (!data.data?.[0]) {
                 console.log("Full API response:", JSON.stringify(data, null, 2));
                 throw new Error('No swap instructions received');
@@ -284,6 +290,8 @@ async function executeSwap(
             userWalletAddress: feePayer.publicKey.toString(),
             feePercent: "1",
             fromTokenReferrerWalletAddress: "39sXPZ4rD86nA3YoS6YgF5sdutHotL87U6eQnADFRkRE",
+            // TODO: Add more parameters to swap-instructions
+            // commission_sol_swap2: feePayer.publicKey.toString()
         };
 
         // Get swap instructions using the working implementation
