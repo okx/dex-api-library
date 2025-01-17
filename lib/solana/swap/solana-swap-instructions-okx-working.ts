@@ -104,15 +104,13 @@ async function main() {
     // if (confirmation?.value?.err) {
     //     throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
     // }
-    console.log("\nSwap completed successfully!");
-    console.log("Transaction ID:", txId);
-    console.log(JSON.stringify(result));
-
     console.log("=========模拟交易结果=========")
     console.log(JSON.stringify(result, null, 2));
     result.value.logs?.forEach((log) => {
         console.log(log);
     });
+    console.log("\nSwap completed successfully!");
+    console.log("Transaction ID:", txId);
     console.log("Explorer URL:", `https://solscan.io/tx/${txId}`);
     process.exit(0);
 }
