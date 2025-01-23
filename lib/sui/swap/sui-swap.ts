@@ -2,18 +2,12 @@ import { getFullnodeUrl, SuiClient } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { fromHex } from '@mysten/bcs';
-import { HmacSHA256 } from 'crypto-js';
-import { enc } from 'crypto-js';
 import dotenv from 'dotenv';
 import { getHeaders } from '../../shared';
 
 dotenv.config();
 
 // Environment variables check right at the start
-const apiKey = process.env.OKX_API_KEY;
-const secretKey = process.env.OKX_SECRET_KEY;
-const apiPassphrase = process.env.OKX_API_PASSPHRASE;
-const projectId = process.env.OKX_PROJECT_ID;
 const userAddress = process.env.WALLET_ADDRESS;
 const userPrivateKey = process.env.PRIVATE_KEY;
 
@@ -274,5 +268,3 @@ async function main() {
 if (require.main === module) {
     main();
 }
-
-export { getTokenInfo, convertAmount, executeTransaction };
