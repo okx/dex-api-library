@@ -1,106 +1,108 @@
-// scripts/solana-swap-instruction.ts
-import cryptoJS from "crypto-js";
-import dotenv from 'dotenv';
-
-// Load environment variables
+import {
+    Connection,
+    Keypair,
+    PublicKey,
+    TransactionInstruction,
+    TransactionMessage,
+    VersionedTransaction,
+    RpcResponseAndContext,
+    SimulatedTransactionResponse,
+    AddressLookupTableAccount,
+    PublicKeyInitData
+} from "@solana/web3.js";
+import base58 from "bs58";
+import dotenv from "dotenv";
 dotenv.config();
-
-interface SwapParams {
-    chainId: string;
-    amount: string;
-    fromTokenAddress: string;
-    toTokenAddress: string;
-    slippage: string;
-    priceImpactProtectionPercentage: string;
-    userWalletAddress: string;
-    feePercent: string;
-    fromTokenReferrerWalletAddress: string;
+function createTransactionInstruction(instruction: any): TransactionInstruction {
+    return new TransactionInstruction({
+        programId: new PublicKey(instruction.programId),
+        keys: instruction.accounts.map((key: any) => ({
+            pubkey: new PublicKey(key.pubkey),
+            isSigner: key.isSigner,
+            isWritable: key.isWritable
+        })),
+        data: Buffer.from(instruction.data, 'base64')
+    });
 }
-
-function getHeaders(timestamp: string, method: string, path: string, queryString = ""): Record<string, string> {
-    const stringToSign = timestamp + method + path + queryString;
-    const sign = cryptoJS.enc.Base64.stringify(
-        cryptoJS.HmacSHA256(stringToSign, process.env.OKX_SECRET_KEY || '')
-    );
-
-    return {
-        "Content-Type": "application/json",
-        "OK-ACCESS-KEY": process.env.OKX_API_KEY || '',
-        "OK-ACCESS-SIGN": sign,
-        "OK-ACCESS-TIMESTAMP": timestamp,
-        "OK-ACCESS-PASSPHRASE": process.env.OKX_API_PASSPHRASE || '',
-        "OK-ACCESS-PROJECT": process.env.OKX_PROJECT_ID || '',
-        "X-Requestid": "11111111123232323",
-        "Cookie": "locale=en-US"
-    };
-}
-
-async function getSwapInstruction(params: any) {
-    const baseUrl = 'https://beta.okex.org';
-    const requestPath = '/api/v5/dex/aggregator/swap-instruction';
-    const queryString = '?' + new URLSearchParams(params).toString();
-    const timestamp = new Date().toISOString();
-
-    // Get full headers including authentication
-    const headers = getHeaders(
-        timestamp,
-        "GET",
-        `/api/v5/dex${requestPath}`,
-        queryString
-    );
-
-    try {
-        const response = await fetch(`${baseUrl}${requestPath}${queryString}`, {
-            method: 'GET',
-            headers
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('Response error:', errorText);
-            throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
-        }
-
-        const data = await response.json();
-        if (!data.data?.[0]) {
-            console.log("Full API response:", JSON.stringify(data, null, 2));
-            throw new Error(`OKX API error: ${data.msg || 'No instructions received'}`);
-        }
-
-        return data;
-    } catch (error) {
-        console.error('Error fetching swap instruction:', error);
-        throw error;
-    }
-}
-
+// CLI execution
 async function main() {
-    try {
-        console.log('Getting Solana swap instruction...');
-
-        if (!process.env.OKX_API_KEY || !process.env.OKX_SECRET_KEY || !process.env.OKX_API_PASSPHRASE) {
-            throw new Error('Missing required OKX API credentials in environment variables');
-        }
-
-        const swapParams: SwapParams = {
-            chainId: '501',
-            amount: '350000000',
-            fromTokenAddress: '11111111111111111111111111111111',
-            toTokenAddress: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
-            slippage: '0.05',
-            priceImpactProtectionPercentage: '1',
-            userWalletAddress: 'FvUDkjR1STZ3c6g3DjXwLsiQ477t2HGH4LQ81xMKWJZk',
-            feePercent: '1',
-            fromTokenReferrerWalletAddress: '39sXPZ4rD86nA3YoS6YgF5sdutHotL87U6eQnADFRkRE'
-        };
-
-        const swapInstruction = await getSwapInstruction(swapParams);
-        console.log(JSON.stringify(swapInstruction, null, 2));
-
-    } catch (error) {
-        console.error('Failed to get swap instruction:', error);
-        process.exit(1);
+    const connection = new Connection(process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com");
+    const wallet = Keypair.fromSecretKey(
+        Uint8Array.from(base58.decode(process.env.PRIVATE_KEY?.toString() || ""))
+    );
+    const baseUrl = "https://beta.okex.org/api/v5/dex/aggregator/swap-instruction";
+    const params = {
+        chainId: "501",
+        feePercent: "1",
+        amount: "1000000",
+        fromTokenAddress: "11111111111111111111111111111111",
+        toTokenAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        slippage: "0.1",
+        userWalletAddress: process.env.WALLET_ADDRESS || "",
+        priceTolerance: "0",
+        autoSlippage: "false",
+        fromTokenReferrerWalletAddress: process.env.WALLET_ADDRESS || "",
+        pathNum: "3"
     }
+    const url = `${baseUrl}?${new URLSearchParams(params).toString()}`;
+    const { data: { instructionLists, addressLookupTableAddresses } } =
+        await fetch(url, {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' }
+        }).then(res => res.json());
+    const instructions: TransactionInstruction[] = [];
+    const addressLookupTableAddresses2 = Array.from(new Set(addressLookupTableAddresses));
+    console.log(addressLookupTableAddresses2);
+    if (instructionLists?.length) {
+        instructions.push(...instructionLists.map(createTransactionInstruction));
+    }
+    // Get lookup table accounts if any
+    const addressLookupTableAccounts: AddressLookupTableAccount[] = [];
+    if (addressLookupTableAddresses2?.length > 0) {
+        console.log("Loading address lookup tables...");
+        const lookupTableAccounts = await Promise.all(
+            addressLookupTableAddresses2.map(async (address: unknown) => {
+                const pubkey = new PublicKey(address as PublicKeyInitData);
+                const account = await connection
+                    .getAddressLookupTable(pubkey)
+                    .then((res) => res.value);
+                if (!account) {
+                    throw new Error(`Could not fetch lookup table account ${address}`);
+                }
+                return account;
+            })
+        );
+        addressLookupTableAccounts.push(...lookupTableAccounts);
+    }
+    console.log("addressLookupTableAccounts:" + addressLookupTableAccounts);
+    const latestBlockhash = await connection.getLatestBlockhash('finalized');
+    // Create transaction message
+    const messageV0 = new TransactionMessage({
+        payerKey: wallet.publicKey,
+        recentBlockhash: latestBlockhash.blockhash,
+        instructions
+    }).compileToV0Message(addressLookupTableAccounts);
+    console.log(JSON.stringify(instructions));
+    const transaction = new VersionedTransaction(messageV0);
+    const result: RpcResponseAndContext<SimulatedTransactionResponse> =
+        await connection.simulateTransaction(transaction);
+    const feePayer = Keypair.fromSecretKey(
+        base58.decode(process.env.PRIVATE_KEY?.toString() || "")
+    );
+    transaction.sign([feePayer])
+    const txId = await connection.sendRawTransaction(transaction.serialize(), {
+        skipPreflight: false,
+        maxRetries: 5
+    });
+    console.log("transaction:" + transaction.serialize())
+    console.log(base58.encode(transaction.serialize()));
+    console.log("=========simulate result=========")
+    // console.log(result);
+    result.value.logs?.forEach((log) => {
+        console.log(log);
+    });
+    console.log("Transaction ID:", txId);
+    console.log("Explorer URL:", `https://solscan.io/tx/${txId}`);
+    process.exit(0);
 }
-
-main();
+main()
