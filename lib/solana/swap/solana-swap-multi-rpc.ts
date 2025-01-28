@@ -109,13 +109,54 @@ const ENV = {
 } as const;
 
 // =================
-// RPC Management
+// RPC Configuration
 // =================
 
-const connection = new Connection(ENV.RPC_URL, {
-    commitment: 'confirmed',
-    confirmTransactionInitialTimeout: MEV_PROTECTION.CONFIRMATION_TIMEOUT
-});
+const RPC_CONFIG = {
+    ENDPOINTS: [
+        ENV.RPC_URL,
+        'https://api.mainnet-beta.solana.com',
+        // 'https://solana-api.projectserum.com',
+        // 'https://rpc.ankr.com/solana',
+        // 'https://solana.getblock.io/mainnet'
+    ],
+    RETRY_DELAY: 1000,
+    MAX_RETRIES: 3
+} as const;
+
+class RPCManager {
+    private static currentIndex = 0;
+    private static connections: Map<string, Connection> = new Map();
+
+    static getCurrentConnection(): Connection {
+        const endpoint = RPC_CONFIG.ENDPOINTS[this.currentIndex];
+        if (!this.connections.has(endpoint)) {
+            this.connections.set(endpoint, new Connection(endpoint, {
+                commitment: 'confirmed',
+                confirmTransactionInitialTimeout: MEV_PROTECTION.CONFIRMATION_TIMEOUT
+            }));
+        }
+        return this.connections.get(endpoint)!;
+    }
+
+    static async withFallback<T>(operation: (connection: Connection) => Promise<T>): Promise<T> {
+        for (let retry = 0; retry < RPC_CONFIG.MAX_RETRIES; retry++) {
+            try {
+                return await operation(this.getCurrentConnection());
+            } catch (error) {
+                console.warn(`RPC error with endpoint ${RPC_CONFIG.ENDPOINTS[this.currentIndex]}:`, error);
+                this.currentIndex = (this.currentIndex + 1) % RPC_CONFIG.ENDPOINTS.length;
+                if (retry < RPC_CONFIG.MAX_RETRIES - 1) {
+                    await new Promise(resolve => setTimeout(resolve, RPC_CONFIG.RETRY_DELAY));
+                }
+            }
+        }
+        throw new Error('All RPC endpoints failed');
+    }
+}
+
+// Replace existing connection with RPCManager
+const connection = RPCManager.getCurrentConnection();
 
 // =================
 // OKX API Integration
@@ -266,8 +307,10 @@ class TransactionBuilder {
             const versionedTx = VersionedTransaction.deserialize(decodedTx);
             console.log("Successfully decoded versioned transaction");
 
-            // Get latest blockhash
-            const { blockhash } = await connection.getLatestBlockhash('finalized');
+            // Get latest blockhash with fallback
+            const { blockhash } = await RPCManager.withFallback(
+                conn => conn.getLatestBlockhash('finalized')
+            );
 
             // Check if transaction already contains a compute unit price instruction
             const existingPriorityFeeIx = versionedTx.message.compiledInstructions.find(ix =>
@@ -331,7 +374,9 @@ class TransactionBuilder {
 
     static async getPriorityFee(): Promise<number> {
         try {
-            const recentFees = await connection.getRecentPrioritizationFees();
+            const recentFees = await RPCManager.withFallback(
+                conn => conn.getRecentPrioritizationFees()
+            );
             if (recentFees.length === 0) return MEV_PROTECTION.MAX_PRIORITY_FEE;
 
             const maxFee = Math.max(...recentFees.map(fee => fee.prioritizationFee));
@@ -396,25 +441,27 @@ async function executeSwapChunk(chunk: TradeChunk): Promise<string> {
 
     console.log("Successfully built transaction");
 
-    // Send transaction with simulation first
-    const txId = await connection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: false,
-        preflightCommitment: 'processed',
-        maxRetries: MEV_PROTECTION.MAX_RETRIES
+    // Send transaction with RPC fallback
+    const txId = await RPCManager.withFallback(async (conn) => {
+        return await conn.sendRawTransaction(tx.serialize(), {
+            skipPreflight: false,
+            preflightCommitment: 'processed',
+            maxRetries: MEV_PROTECTION.MAX_RETRIES
+        });
     });
 
     console.log(`Transaction sent: ${txId}`);
     console.log(`Explorer URL: https://solscan.io/tx/${txId}`);
 
-    // Get latest blockhash for confirmation
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-
-    // Wait for confirmation
-    const confirmation = await connection.confirmTransaction({
-        signature: txId,
-        blockhash,
-        lastValidBlockHeight
-    }, 'confirmed');
+    // Get confirmation with RPC fallback
+    const confirmation = await RPCManager.withFallback(async (conn) => {
+        const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
+        return await conn.confirmTransaction({
+            signature: txId,
+            blockhash,
+            lastValidBlockHeight
+        }, 'confirmed');
+    });
 
     if (confirmation.value.err) {
         throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);

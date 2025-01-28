@@ -48,6 +48,7 @@
   "dependencies": {
     "@mysten/bcs": "^1.2.0",
     "@mysten/sui": "^1.17.0",
+    "@okxweb3/coin-sui": "^1.1.0",
     "@solana/web3.js": "^1.95.8",
     "@types/chalk": "^0.4.31",
     "bn.js": "^5.2.1",
