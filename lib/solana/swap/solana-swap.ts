@@ -2,7 +2,7 @@
 import base58 from "bs58";
 import BN from "bn.js";
 import * as solanaWeb3 from "@solana/web3.js";
-import { Connection } from "@solana/web3.js";
+import { Connection, GetVersionedTransactionConfig } from "@solana/web3.js";
 import cryptoJS from "crypto-js";
 import dotenv from 'dotenv';
 
@@ -21,12 +21,55 @@ const solanaRpcUrl = process.env.SOLANA_RPC_URL;
 const SOLANA_CHAIN_ID = "501";
 const COMPUTE_UNITS = 300000;
 const MAX_RETRIES = 3;
+const INITIAL_RETRY_DELAY = 1000; // 1 second
+const MAX_RETRY_DELAY = 10000; // 10 seconds
 
 const connection = new Connection(`${solanaRpcUrl}`, {
     confirmTransactionInitialTimeout: 5000
 });
 
+type TransactionStatus = 'confirmed' | 'finalized' | 'processed' | 'dropped' | 'unknown';
 
+async function getTransactionStatus(txId: string): Promise<TransactionStatus> {
+    try {
+        const confirmedTx: GetVersionedTransactionConfig = {
+            maxSupportedTransactionVersion: 0,
+            commitment: 'confirmed'
+        };
+
+        const finalizedTx: GetVersionedTransactionConfig = {
+            maxSupportedTransactionVersion: 0,
+            commitment: 'finalized'
+        };
+
+
+        if (finalizedTx) return 'finalized';
+        if (confirmedTx) return 'confirmed';
+
+        // Check if transaction is still in memory pool
+        const signatureStatus = await connection.getSignatureStatus(txId);
+        if (signatureStatus.value === null) {
+            return 'dropped';
+        }
+
+        return 'unknown';
+    } catch (error) {
+        console.error('Error checking transaction status:', error);
+        return 'unknown';
+    }
+}
+
+async function isTransactionConfirmed(txId: string) {
+    const status = await getTransactionStatus(txId);
+    return status === 'confirmed' || status === 'finalized';
+}
+
+function calculateRetryDelay(retryCount: number): number {
+    // Exponential backoff with jitter
+    const exponentialDelay = INITIAL_RETRY_DELAY * Math.pow(2, retryCount);
+    const jitter = Math.random() * 1000; // Random delay between 0-1000ms
+    return Math.min(exponentialDelay + jitter, MAX_RETRY_DELAY);
+}
 
 function getHeaders(timestamp: string, method: string, requestPath: string, queryString = "") {
     if (!apiKey || !secretKey || !apiPassphrase || !projectId) {
@@ -170,6 +213,7 @@ async function main() {
 
         console.log("\nExecuting swap transaction...");
         let retryCount = 0;
+        let txId;
         while (retryCount < MAX_RETRIES) {
             try {
                 if (!swapData || (!swapData.tx && !swapData.data)) {
@@ -212,9 +256,9 @@ async function main() {
                     tx.partialSign(feePayer);
                 }
 
-                const txId = await connection.sendRawTransaction(tx.serialize(), {
+                txId = await connection.sendRawTransaction(tx.serialize(), {
                     skipPreflight: false,
-                    maxRetries: 5
+                    maxRetries: MAX_RETRIES
                 });
 
                 const confirmation = await connection.confirmTransaction({
@@ -234,13 +278,38 @@ async function main() {
                 process.exit(0);
             } catch (error) {
                 console.error(`Attempt ${retryCount + 1} failed:`, error);
+
+                if (txId) {
+                    const status = await getTransactionStatus(txId);
+                    console.log(`Transaction status: ${status}`);
+
+                    switch (status) {
+                        case 'finalized':
+                        case 'confirmed':
+                            console.log("Transaction confirmed successfully, no retry needed.");
+                            process.exit(0);
+                        case 'processed':
+                            console.log("Transaction processed but not confirmed, waiting longer...");
+                            await new Promise(resolve => setTimeout(resolve, 5000)); // Extra wait for confirmation
+                            break;
+                        case 'dropped':
+                            console.log("Transaction dropped, will retry with new blockhash");
+                            break;
+                        case 'unknown':
+                            console.log("Transaction status unknown, proceeding with retry");
+                            break;
+                    }
+                }
+
                 retryCount++;
 
                 if (retryCount === MAX_RETRIES) {
                     throw error;
                 }
 
-                await new Promise(resolve => setTimeout(resolve, 2000 * retryCount));
+                const delay = calculateRetryDelay(retryCount);
+                console.log(`Waiting ${delay}ms before retry ${retryCount + 1}/${MAX_RETRIES}...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
     } catch (error) {
