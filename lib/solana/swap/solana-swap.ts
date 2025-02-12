@@ -26,7 +26,13 @@ const connection = new Connection(`${solanaRpcUrl}`, {
     confirmTransactionInitialTimeout: 5000
 });
 
-
+async function isTransactionFinalized(txId: string) {
+    const txInfo = await connection.getTransaction(txId, {
+        commitment: 'finalized',
+        maxSupportedTransactionVersion: 0
+    });
+    return txInfo !== null;
+}
 
 function getHeaders(timestamp: string, method: string, requestPath: string, queryString = "") {
     if (!apiKey || !secretKey || !apiPassphrase || !projectId) {
@@ -170,6 +176,7 @@ async function main() {
 
         console.log("\nExecuting swap transaction...");
         let retryCount = 0;
+        let txId;
         while (retryCount < MAX_RETRIES) {
             try {
                 if (!swapData || (!swapData.tx && !swapData.data)) {
@@ -212,7 +219,7 @@ async function main() {
                     tx.partialSign(feePayer);
                 }
 
-                const txId = await connection.sendRawTransaction(tx.serialize(), {
+                txId = await connection.sendRawTransaction(tx.serialize(), {
                     skipPreflight: false,
                     maxRetries: 5
                 });
@@ -234,6 +241,13 @@ async function main() {
                 process.exit(0);
             } catch (error) {
                 console.error(`Attempt ${retryCount + 1} failed:`, error);
+                
+                if (txId && await isTransactionFinalized(txId)) {
+                    console.log("Transaction already confirmed, don't retry.");
+                    console.log("Explorer URL:", `https://solscan.io/tx/${txId}`);
+                    process.exit(0);
+                }
+                
                 retryCount++;
 
                 if (retryCount === MAX_RETRIES) {
