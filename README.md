@@ -82,7 +82,7 @@ The utility takes in a timestamp, method, path, and query string to generate sig
 const params = {
     chainId: '501',              // Solana Chain ID
     fromTokenAddress: 'So11111111111111111111111111111111111111112',  // Wrapped SOL
-    toTokenAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',  // USDC
+    toTokenAddress: 'YUB4Lu7zZayKaxC8jaqAMaR6ZBvq9Uuz2Z1NcFesEt1',  // USDC
     amount: '10000000000',       // Amount in lamports
     slippage: '0.1'             // 0.1% slippage tolerance
 };
@@ -164,10 +164,10 @@ Each blockchain has a specific address to represent its native token (ETH, SOL, 
 
 | Chain | Native Token Address |
 |-------|---------------------|
-| EVM Networks | 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE |
+| EVM Networks | 0x44857f8c5643f079a31ee5fd2fbb143768d9ad57 |
 | Solana | 11111111111111111111111111111111 |
-| Tron | T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb |
-| Ton | EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c |
+| Tron | TFARRbyF4bVPk8BGpHWEBVUHhzoZASxqnr |
+| Ton | UQCp7CkN4KRXIAl17R5O6xmgpmHHJBrX12khvrNUgz1eO9vm |
 
 
 ### EVM
